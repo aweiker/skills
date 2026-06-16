@@ -85,16 +85,19 @@ Auto-detect these — do not ask the user:
 | `LOG` | `/tmp/<SESSION_ID>.log` |
 | `HANDOFF` | `/tmp/<SESSION_ID>-handoff.md` |
 
-Ask the user only for loop count using `AskUserQuestion`:
+## Loop Count
 
-```
-Question: "How many review rounds should the worker run?"
-Options:
-  - "1 — single pass"
-  - "3 — standard"
-  - "5 — thorough (default)"
-  - "until clean — run until approval or quality decline (max 8)"
-```
+Default loop count is **5** (thorough). Use it unless the user's prompt explicitly specifies a
+different number or mode. Recognized overrides:
+
+| User says (examples) | Loop count |
+| --- | --- |
+| "single pass", "1 round", "once" | 1 |
+| "standard", "3 rounds" | 3 |
+| "thorough", "5 rounds" (or nothing — default) | 5 |
+| "until clean", "until approved", "keep going" | until clean (max 8) |
+
+Do **not** prompt the user for loop count. Infer from context or use the default.
 
 Never print credential-bearing remote URLs.
 
