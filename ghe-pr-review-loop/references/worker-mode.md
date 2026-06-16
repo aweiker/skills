@@ -11,9 +11,11 @@ from a previous run or crashed session never contaminate the current run's trend
 ```bash
 SCORES_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-scores.jsonl"
 QUALITY_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-quality.jsonl"
+PROGRESS_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-progress.log"
 > "$SCORES_LOG"
 > "$QUALITY_LOG"
-echo "Initialized session logs: $SCORES_LOG $QUALITY_LOG"
+> "$PROGRESS_LOG"
+echo "Initialized session logs: $SCORES_LOG $QUALITY_LOG $PROGRESS_LOG"
 ```
 
 ## Rehydrate Current State
@@ -636,11 +638,12 @@ print(f"Round {round_num} score: avg_quality={avg_quality:.3f} total={total} "
 PY
 ```
 
-After appending the round score, emit a human-readable progress block so the orchestrator and user
-can follow along without tailing the log:
+After appending the round score, emit a human-readable progress block to stdout and append it to a
+dedicated progress log so the orchestrator can read it reliably without guessing at tail depth:
 
 ```bash
-python3 - "$SCORES_LOG" <<'PY'
+PROGRESS_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-progress.log"
+python3 - "$SCORES_LOG" "$PROGRESS_LOG" <<'PY'
 import json, sys
 lines = [l for l in open(sys.argv[1]) if l.strip()]
 e = json.loads(lines[-1])
@@ -650,11 +653,16 @@ if len(lines) >= 2:
     prev_q = json.loads(lines[-2])["avg_quality"]
     arrow = "▲" if q > prev_q else ("▼" if q < prev_q else "→")
     trend = f"  trend={arrow}{abs(q - prev_q):.2f}"
-print(f"\n=== Round {e['round']} complete ===")
-print(f"  findings   : {e['total']}")
-print(f"  avg quality: {q:.2f}{trend}")
-print(f"  scope creep: {len(e['scope_creep_ids'])} finding(s)")
-print(f"  ci         : {e['ci']}")
+block = (
+    f"\n=== Round {e['round']} complete ===\n"
+    f"  findings   : {e['total']}\n"
+    f"  avg quality: {q:.2f}{trend}\n"
+    f"  scope creep: {len(e['scope_creep_ids'])} finding(s)\n"
+    f"  ci         : {e['ci']}\n"
+)
+print(block)
+with open(sys.argv[2], "a") as fh:
+    fh.write(block)
 PY
 ```
 

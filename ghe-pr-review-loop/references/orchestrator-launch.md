@@ -15,9 +15,9 @@ If the worktree is dirty, decide with the user whether to let the worker continu
 ## 2. Create Worker Prompt File
 
 **MANDATORY — READ ENTIRE FILE**: Load `references/worker-prompt-template.md` for the exact
-prompt content. Substitute all bracketed values including `<LOOP_COUNT>` from the user's answer
-to the loop count question (1 / 3 / 5 / until clean). Write the filled-in template to
-`/tmp/<SESSION_ID>-prompt.md`.
+prompt content. Substitute all bracketed values including `<LOOP_COUNT>` — infer the loop count
+from the user's prompt per the Loop Count table in SKILL.md (default: 5). Write the filled-in
+template to `/tmp/<SESSION_ID>-prompt.md`.
 
 ## 3. Spawn the Worker
 
@@ -60,12 +60,14 @@ Worktree: <WORKTREE>
 
 ## Status Checks
 
-When the user asks for status, avoid importing large logs:
+When the user asks for status, avoid importing large logs. Read the progress log first — it contains
+one block per completed round and is always up to date regardless of log verbosity:
 
 ```bash
 cat "/tmp/$SESSION_ID.pid" 2>/dev/null || true
 pgrep -af "($SESSION_ID|/tmp/$SESSION_ID-prompt.md)" || true
-tail -n 40 "$LOG" 2>/dev/null || true
+cat "/tmp/$SESSION_ID-progress.log" 2>/dev/null || echo "(no rounds completed yet)"
+tail -n 20 "$LOG" 2>/dev/null || true
 test -f "$HANDOFF" && cat "$HANDOFF"
 ```
 

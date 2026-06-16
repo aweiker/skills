@@ -1,6 +1,6 @@
 ---
 name: ghe-pr-review-loop
-description: "Run GitHub Enterprise PR review loops: triage bot findings by quality, fix verified actionable defects, reply inline, and halt when finding quality declines. Use when asked to spawn GHE PR reviews, run PR-bot review loops, or handle repeated review-bot feedback on a GHE PR."
+description: "Run GitHub Enterprise PR review loops: triage bot findings by quality, fix verified actionable defects, reply inline, and halt when finding quality declines. Operates in two modes: orchestrator (spawns a background worker pi process) and worker (performs the actual review-fix loop). Use when asked to spawn GHE PR reviews, run PR-bot review loops, or handle repeated review-bot feedback on a GHE PR."
 allowed-tools:
   - Bash(gh api *)
   - Bash(gh pr view *)
