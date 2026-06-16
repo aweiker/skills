@@ -1,6 +1,6 @@
 ---
 name: design-first-implementation
-description: Always load at the start of any story, issue, bug fix, feature, PR, or implementation task — for every project work item without exception. Performs an applicability check to decide whether a full design/test-first plan is needed. Use the full workflow for stateful, persistence, API, contract, migration, security/privacy, integration, retry/idempotency, or edge-case-heavy changes. Triggers on: story, issue, bug fix, feature, PR, implementation, task, test-first, TDD, design plan, implementation gate, behavior matrix, design-first.
+description: "Always load at the start of any story, issue, bug fix, feature, PR, or implementation task — for every project work item without exception. Performs an applicability check to decide whether a full design/test-first plan is needed. Use the full workflow for stateful, persistence, API, contract, migration, security/privacy, integration, retry/idempotency, or edge-case-heavy changes. Triggers on: story, issue, bug fix, feature, PR, implementation, task, test-first, TDD, design plan, implementation gate, behavior matrix, design-first."
 allowed-tools:
   - read
   - subagent
