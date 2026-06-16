@@ -636,20 +636,72 @@ print(f"Round {round_num} score: avg_quality={avg_quality:.3f} total={total} "
 PY
 ```
 
+After appending the round score, emit a human-readable progress block so the orchestrator and user
+can follow along without tailing the log:
+
+```bash
+python3 - "$SCORES_LOG" <<'PY'
+import json, sys
+lines = [l for l in open(sys.argv[1]) if l.strip()]
+e = json.loads(lines[-1])
+q = e["avg_quality"]
+trend = ""
+if len(lines) >= 2:
+    prev_q = json.loads(lines[-2])["avg_quality"]
+    arrow = "▲" if q > prev_q else ("▼" if q < prev_q else "→")
+    trend = f"  trend={arrow}{abs(q - prev_q):.2f}"
+print(f"\n=== Round {e['round']} complete ===")
+print(f"  findings   : {e['total']}")
+print(f"  avg quality: {q:.2f}{trend}")
+print(f"  scope creep: {len(e['scope_creep_ids'])} finding(s)")
+print(f"  ci         : {e['ci']}")
+PY
+```
+
 ## Handoff File
 
-Always write `HANDOFF` before exiting:
+Always write `HANDOFF` before exiting. Generate the round summary table from `SCORES_LOG`:
+
+```bash
+python3 - "$SCORES_LOG" <<'PY'
+import json, sys
+lines = [l for l in open(sys.argv[1]) if l.strip()]
+entries = [json.loads(l) for l in lines]
+print("| Round | Findings | Avg quality | Scope creep | CI |")
+print("| --- | --- | --- | --- | --- |")
+for i, e in enumerate(entries):
+    prev_q = entries[i-1]["avg_quality"] if i > 0 else None
+    q = e["avg_quality"]
+    arrow = ("▲" if q > prev_q else ("▼" if q < prev_q else "→")) if prev_q is not None else "—"
+    print(f"| {e['round']} | {e['total']} | {q:.2f} {arrow} | {len(e['scope_creep_ids'])} | {e['ci']} |")
+total_findings = sum(e["total"] for e in entries)
+overall_q = round(sum(e["avg_quality"] for e in entries) / len(entries), 3) if entries else 0
+trend = "improving" if len(entries) >= 2 and entries[-1]["avg_quality"] > entries[0]["avg_quality"] \
+    else "declining" if len(entries) >= 2 and entries[-1]["avg_quality"] < entries[0]["avg_quality"] \
+    else "stable"
+print(f"\nRounds completed: {len(entries)}  Total findings: {total_findings}  Overall avg quality: {overall_q:.2f}  Trend: {trend}")
+PY
+```
+
+Then write the full HANDOFF:
 
 ```text
 Completed PR review loop for #<PR>.
 Latest head: <sha>
+
+## Round summary
+<paste table output from above>
+
+## Findings
 Fixed: <bullets>
 Rejected/qualified: <bullets>
-Validation: <commands/results>
-CI: green / failing <job>
-Round score: avg_quality=<0.0–1.0> total=<N> (quality trend: <improving|stable|declining>)
 Scope creep flagged: <none | bullet per finding with comment ID and why it would expand scope>
-Review-fix verification:
+
+## Validation
+<commands/results>
+CI: green / failing <job>
+
+## Review-fix verification
 - Current top-level PR comments fetched: yes/no
 - Current inline PR comments fetched through full GHE API: yes/no
 - Each current root inline comment has an inline reply: yes/no
