@@ -1,6 +1,6 @@
 ---
 name: design-first-implementation
-description: "Always load at the start of any story, issue, bug fix, feature, PR, or implementation task — for every project work item without exception. Performs an applicability check to decide whether a full design/test-first plan is needed. Use the full workflow for stateful, persistence, API, contract, migration, security/privacy, integration, retry/idempotency, or edge-case-heavy changes. Triggers on: story, issue, bug fix, feature, PR, implementation, task, test-first, TDD, design plan, implementation gate, behavior matrix, design-first."
+description: "Always load at the start of any story, issue, bug fix, feature, PR, or implementation task — for every project work item without exception. Performs an applicability check to decide whether a full design/test-first plan is needed. Default to full workflow: if the task has ANY edge cases, negative cases, boundary conditions, typed contracts, escaping, or more than one acceptance criterion, use the full workflow. Only skip for purely mechanical changes with zero behavioral edge cases. Triggers on: story, issue, bug fix, feature, PR, implementation, task, test-first, TDD, design plan, implementation gate, behavior matrix, design-first."
 allowed-tools:
   - Read
   - Agent
@@ -21,6 +21,8 @@ Perform the applicability check and record the minimum required output:
 - Reason:
 - If no, why safe to skip:
 ```
+
+**Default to full workflow.** If the issue, acceptance criteria, or implementation surface has *any* edge cases, negative cases, boundary conditions, typed contracts, escaping requirements, or non-trivial acceptance criteria beyond a single happy path — use the full workflow. The bar for skipping is high: the change must be purely mechanical (renaming, formatting, dependency bumps, docs-only) with zero behavioral edge cases. When in doubt, run the full workflow. Do not rationalize skipping by minimizing the complexity of edge cases or classifying them as "not heavy enough."
 
 ## Core rule
 
@@ -48,6 +50,27 @@ Not every step applies to every change. Use this to route:
 | Stateful / status / freshness logic | Design agent also produces step 5 state-transition table |
 | Schema or data-shape change | Design agent also produces step 6 migration/backfill rules |
 | Review finding arrives mid-work | Implementation agent: step 9 review loop |
+
+**Full workflow triggers** (any one is sufficient):
+
+- Stateful, persistence, or read-model logic
+- API or contract changes (including new API clients or typed contract types)
+- Migrations or schema changes
+- Security, privacy, escaping, or authorization behavior
+- Integration or cross-boundary data flow
+- Retry, idempotency, or failure-recovery logic
+- Any acceptance criteria naming negative cases or boundary conditions
+- More than one non-trivial acceptance criterion
+- Typed contract consumption or production (frontend or backend)
+- Any explicit escaping, sanitization, or injection-prevention requirement
+- Any UI rendering of backend-governed data with distinct empty/error/boundary states
+
+**Skip triggers** (all must be true to skip):
+
+- Change is purely mechanical: rename, format, dep bump, docs-only, or config-only
+- Zero behavioral edge cases exist
+- No acceptance criteria name negative cases or boundary conditions
+- No typed contracts are introduced or consumed
 
 ## Workflow
 
