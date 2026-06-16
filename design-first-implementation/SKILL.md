@@ -1,6 +1,9 @@
 ---
 name: design-first-implementation
-description: Use at the start of any story, issue, bug fix, feature, PR, or implementation task to decide whether a design/test-first plan is needed. Always evaluate for project work; use the full workflow for stateful, persistence, API, contract, migration, security/privacy, integration, retry/idempotency, or edge-case-heavy changes.
+description: Always load at the start of any story, issue, bug fix, feature, PR, or implementation task — for every project work item without exception. Performs an applicability check to decide whether a full design/test-first plan is needed. Use the full workflow for stateful, persistence, API, contract, migration, security/privacy, integration, retry/idempotency, or edge-case-heavy changes. Triggers on: story, issue, bug fix, feature, PR, implementation, task, test-first, TDD, design plan, implementation gate, behavior matrix, design-first.
+allowed-tools:
+  - Read
+  - Agent
 ---
 
 # Test-First Design
@@ -9,13 +12,7 @@ Prevent happy-path-only implementation by making expected behavior and tests exp
 
 ## Activation rule
 
-At the start of any story, issue, bug fix, feature, PR, or implementation task, load this skill and perform at least the applicability check below.
-
-Use the full workflow when the work is non-trivial or touches state, persistence, APIs, contracts, schemas, migrations, security/privacy, integrations, retries, idempotency, retention, reconciliation, or edge-case-heavy behavior.
-
-For simple mechanical edits, documentation-only changes, typo fixes, formatting-only changes, or obvious one-line refactors, the full workflow may be skipped only after recording why it is safe to skip.
-
-Minimum required output for every issue/story task:
+Perform the applicability check and record the minimum required output:
 
 ```markdown
 ## Test-first design applicability
@@ -27,40 +24,30 @@ Minimum required output for every issue/story task:
 
 ## Core rule
 
-Do not start production implementation for non-trivial work until you have produced a design/test plan that identifies:
-
-1. The intended behavior.
-2. Existing invariants and constraints.
-3. Happy paths.
-4. Unhappy paths.
-5. State transitions, if applicable.
-6. Migration/backfill/compatibility behavior, if applicable.
-7. Tests to write or update.
-8. Open questions or ambiguous behavior.
-
-If behavior is ambiguous, pause and ask for clarification instead of implementing ad hoc behavior.
+Do not spawn the implementation sub-agent until the design sub-agent's plan has passed the Implementation gate. If behavior is ambiguous at any point, pause and surface the ambiguity to the user with proposed solutions before proceeding.
 
 ## Never
 
-- NEVER conflate persisted state with derived/read-time state. They diverge once time, policy, permissions, or compatibility rules are applied; a test that asserts on one silently passes the other, hiding the bug until production.
-- NEVER patch a review finding's local symptom. A finding is evidence of a missing design rule — fix the rule and add a test, or the same class of bug returns elsewhere.
-- NEVER let migration-time and runtime classify the same old data differently. Backfill and live reads must agree on what "stale", "missing", or "complete" mean, or rows will flip state on the next write.
-- NEVER ship happy-path-only behavior. If an unhappy path is hard to specify, that is a design gap to resolve before coding, not an implementation detail to improvise.
-- NEVER skip negative assertions for security/privacy work. "No leakage" and "no forbidden side effect" must be asserted explicitly; their absence is not evidence of their safety.
+- NEVER conflate persisted state with derived/read-time state. They diverge once time, policy, permissions, or compatibility rules are applied; a test that asserts on one silently passes the other, hiding the bug until production. **Classic failure**: `status == "stale"` passes in tests because freshness is evaluated at write-time, but consumers read rows written before the policy changed and see a different value — the divergence only appears after a policy rollout.
+- NEVER patch a review finding's local symptom. A finding is evidence of a missing design rule — fix the rule and add a test, or the same class of bug returns elsewhere. **Classic failure**: a null-pointer fix lands, review closes, and three similar callers hit the same null two weeks later because the invariant ("this field is always populated after step X") was never stated or tested.
+- NEVER let migration-time and runtime classify the same old data differently. Backfill and live reads must agree on what "stale", "missing", or "complete" mean, or rows will flip state on the next write. **Classic failure**: migration marks rows as `complete` using the old definition; runtime re-evaluates them with the new definition and silently flips them to `incomplete` on first touch, corrupting data that the migration was meant to preserve.
+- NEVER ship happy-path-only behavior. If an unhappy path is hard to specify, that is a design gap to resolve before coding, not an implementation detail to improvise. **Classic failure**: retry behavior is left "TBD" and the implementation silently creates duplicate records on re-delivery because idempotency was never specified.
+- NEVER skip negative assertions for security/privacy work. "No leakage" and "no forbidden side effect" must be asserted explicitly; their absence is not evidence of their safety. **Classic failure**: a test asserts the correct user's data is returned but never checks that another user's data is absent — the permission bug passes every test and reaches production.
+- NEVER send the sub-agent a vague prompt. Include the full task description, relevant file context, and explicit instruction to cover all applicable workflow steps — a thin prompt produces a shallow plan that passes review and only reveals gaps during implementation. **Classic failure**: sub-agent receives "design the retry logic" with no file context, produces a generic exponential-backoff plan, and misses the idempotency constraint that was obvious from the existing schema.
+- NEVER let the sub-agent's deliberation accumulate in main context. Only the final approved plan (from the design sub-agent) and the final Verification summary (from the implementation sub-agent) should be copied into main context — intermediate drafts, back-and-forth feedback, and discarded paths are noise that crowds out later context. **Classic failure**: two rounds of sub-agent iteration land in full in main context; by the time implementation starts the context window is half full and later tool calls get truncated.
+- NEVER give the implementation sub-agent the task description without the approved plan. The sub-agent must implement against the test matrix, not re-derive intent from the original description — re-derivation produces a different plan and silently invalidates the design review. **Classic failure**: implementation sub-agent is handed the ticket description, produces a slightly different interpretation of idempotency behavior, and the divergence only surfaces in a production incident.
 
 ## Scope
-
-Always evaluate this skill for story/issue work. Use the full workflow when a change is stateful, persistence- or migration-related, contract- or schema-sensitive, security/privacy-sensitive, integration-related, retry/idempotency-related, or likely to have important edge cases. For simple mechanical edits, documentation-only changes, typo fixes, or straightforward refactors, record the applicability check and use a shorter plan or skip the full workflow.
 
 Not every step applies to every change. Use this to route:
 
 | Condition | Required steps |
 |---|---|
-| Any issue/story/PR implementation | Applicability check |
-| Full workflow applies | 1 Goal, 2 Invariants, 3 Happy paths, 4 Unhappy paths, 7 Tests, 8 Implement |
-| Stateful / status / freshness logic | + 5 State-transition table |
-| Schema or data-shape change | + 6 Migration/backfill rules |
-| Review finding arrives mid-work | + 9 Review loop |
+| Any issue/story/PR implementation | Applicability check (main agent) |
+| Full workflow applies | Design sub-agent: steps 1–7 → Main agent: review plan → Implementation sub-agent: steps 8–9 → Main agent: review results |
+| Stateful / status / freshness logic | Design sub-agent also produces step 5 state-transition table |
+| Schema or data-shape change | Design sub-agent also produces step 6 migration/backfill rules |
+| Review finding arrives mid-work | Implementation sub-agent: step 9 review loop |
 
 ## Workflow
 
@@ -192,15 +179,33 @@ For each finding:
 
 ## Required output format before implementation
 
-**MANDATORY for issue/story work — load `references/templates.md`** and first produce the Test-first design applicability section.
+If the full workflow does not apply: **do NOT load** `references/templates.md` — record why it is safe to skip and proceed.
 
-If the full workflow applies, also produce the Design/test plan section before writing production code. If some sections do not apply, say why.
+If the full workflow applies:
 
-If the full workflow does not apply, record why it is safe to skip before proceeding.
+**MANDATORY — load `references/templates.md`**, then run two sub-agent phases:
+
+### Phase 1: Design sub-agent (steps 1–7)
+
+1. **Spawn a design sub-agent** (via the `Agent` tool) with a prompt that includes: the full task description, relevant file context, and an instruction to produce the complete Design/test plan (all applicable steps from the workflow, using the template from `references/templates.md`).
+2. **Review the returned plan** against the Implementation gate checklist. Ask: "Which check is hardest to answer?" — that is the likeliest gap.
+3. **If gaps are found**: send the plan back to the sub-agent with specific feedback identifying the missing rules or uncovered paths. Accept the revision. Repeat at most once (2 rounds total). If round 2 is still insufficient, do not proceed — surface the remaining gap to the user with 2–3 proposed resolutions and ask them to choose.
+4. **Approve the plan.** Copy only the final approved plan into main context — not the deliberation.
+
+### Phase 2: Implementation sub-agent (steps 8–9)
+
+1. **Spawn an implementation sub-agent** (via the `Agent` tool) with a prompt that includes: the approved plan verbatim, relevant file context, and an instruction to implement only against the test matrix and produce the Verification summary on completion.
+2. **Review the returned Verification summary.** Check:
+   - Did the sub-agent implement against the test matrix (not ad hoc)?
+   - Is the acceptance criteria trace complete?
+   - Were any new special cases discovered and added to the matrix?
+   - Are there open questions that need resolution before the work is done?
+3. **If the summary is incomplete or new cases were added without design coverage**: send feedback to the sub-agent for a follow-up pass. Repeat at most once. If round 2 is still insufficient, do not accept — surface the specific uncovered cases to the user with 2–3 proposed resolutions and ask them to choose before continuing.
+4. **Accept the result.** Copy only the final Verification summary into main context — not the implementation deliberation.
 
 ## Implementation gate
 
-Before writing production code, check:
+Before approving Phase 2 output, ask: "Which of these checks is hardest to answer right now?" The hardest one is the likeliest gap — send the sub-agent back if any answer is no for a relevant category.
 
 - Are source-of-truth and derived/read-time values separated?
 - Are partial and missing inputs specified?
@@ -209,8 +214,10 @@ Before writing production code, check:
 - Are tests named for the behavior, not the implementation?
 - Are security/privacy negative assertions included where relevant?
 
-If any answer is no for a relevant category, continue designing before coding.
-
 ## Verification summary
 
-When finished, produce the Verification summary from `references/templates.md` (loaded above). **Do NOT load** `references/templates.md` a second time if it is already in context.
+When Phase 2 is complete, the Verification summary from `references/templates.md` is produced by the implementation sub-agent. **Do NOT load** `references/templates.md` a second time if it is already in context.
+
+## Structure note
+
+If this file exceeds 300 lines, move workflow steps 1–7 detail to `references/workflow-steps.md` and load it inside the design sub-agent prompt rather than the main SKILL.md body.
