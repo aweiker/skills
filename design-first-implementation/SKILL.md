@@ -2,8 +2,8 @@
 name: design-first-implementation
 description: Always load at the start of any story, issue, bug fix, feature, PR, or implementation task — for every project work item without exception. Performs an applicability check to decide whether a full design/test-first plan is needed. Use the full workflow for stateful, persistence, API, contract, migration, security/privacy, integration, retry/idempotency, or edge-case-heavy changes. Triggers on: story, issue, bug fix, feature, PR, implementation, task, test-first, TDD, design plan, implementation gate, behavior matrix, design-first.
 allowed-tools:
-  - Read
-  - Agent
+  - read
+  - subagent
 ---
 
 # Test-First Design
@@ -24,7 +24,7 @@ Perform the applicability check and record the minimum required output:
 
 ## Core rule
 
-Do not spawn the implementation sub-agent until the design sub-agent's plan has passed the Implementation gate. If behavior is ambiguous at any point, pause and surface the ambiguity to the user with proposed solutions before proceeding.
+Do not spawn the implementation agent until the design agent's plan has passed the Implementation gate. If behavior is ambiguous at any point, pause and surface the ambiguity to the user with proposed solutions before proceeding.
 
 ## Never
 
@@ -33,9 +33,9 @@ Do not spawn the implementation sub-agent until the design sub-agent's plan has 
 - NEVER let migration-time and runtime classify the same old data differently. Backfill and live reads must agree on what "stale", "missing", or "complete" mean, or rows will flip state on the next write. **Classic failure**: migration marks rows as `complete` using the old definition; runtime re-evaluates them with the new definition and silently flips them to `incomplete` on first touch, corrupting data that the migration was meant to preserve.
 - NEVER ship happy-path-only behavior. If an unhappy path is hard to specify, that is a design gap to resolve before coding, not an implementation detail to improvise. **Classic failure**: retry behavior is left "TBD" and the implementation silently creates duplicate records on re-delivery because idempotency was never specified.
 - NEVER skip negative assertions for security/privacy work. "No leakage" and "no forbidden side effect" must be asserted explicitly; their absence is not evidence of their safety. **Classic failure**: a test asserts the correct user's data is returned but never checks that another user's data is absent — the permission bug passes every test and reaches production.
-- NEVER send the sub-agent a vague prompt. Include the full task description, relevant file context, and explicit instruction to cover all applicable workflow steps — a thin prompt produces a shallow plan that passes review and only reveals gaps during implementation. **Classic failure**: sub-agent receives "design the retry logic" with no file context, produces a generic exponential-backoff plan, and misses the idempotency constraint that was obvious from the existing schema.
-- NEVER let the sub-agent's deliberation accumulate in main context. Only the final approved plan (from the design sub-agent) and the final Verification summary (from the implementation sub-agent) should be copied into main context — intermediate drafts, back-and-forth feedback, and discarded paths are noise that crowds out later context. **Classic failure**: two rounds of sub-agent iteration land in full in main context; by the time implementation starts the context window is half full and later tool calls get truncated.
-- NEVER give the implementation sub-agent the task description without the approved plan. The sub-agent must implement against the test matrix, not re-derive intent from the original description — re-derivation produces a different plan and silently invalidates the design review. **Classic failure**: implementation sub-agent is handed the ticket description, produces a slightly different interpretation of idempotency behavior, and the divergence only surfaces in a production incident.
+- NEVER send a spawned agent a vague prompt. Include the full task description, relevant file context, and explicit instruction to cover all applicable workflow steps — a thin prompt produces a shallow plan that passes review and only reveals gaps during implementation. **Classic failure**: agent receives "design the retry logic" with no file context, produces a generic exponential-backoff plan, and misses the idempotency constraint that was obvious from the existing schema.
+- NEVER let a spawned agent's deliberation accumulate in main context. Only the final approved plan (from the design agent) and the final Verification summary (from the implementation agent) should be copied into main context — intermediate drafts, back-and-forth feedback, and discarded paths are noise that crowds out later context. **Classic failure**: two rounds of agent iteration land in full in main context; by the time implementation starts the context window is half full and later tool calls get truncated.
+- NEVER give the implementation agent the task description without the approved plan. The agent must implement against the test matrix, not re-derive intent from the original description — re-derivation produces a different plan and silently invalidates the design review. **Classic failure**: implementation agent is handed the ticket description, produces a slightly different interpretation of idempotency behavior, and the divergence only surfaces in a production incident.
 
 ## Scope
 
@@ -44,10 +44,10 @@ Not every step applies to every change. Use this to route:
 | Condition | Required steps |
 |---|---|
 | Any issue/story/PR implementation | Applicability check (main agent) |
-| Full workflow applies | Design sub-agent: steps 1–7 → Main agent: review plan → Implementation sub-agent: steps 8–9 → Main agent: review results |
-| Stateful / status / freshness logic | Design sub-agent also produces step 5 state-transition table |
-| Schema or data-shape change | Design sub-agent also produces step 6 migration/backfill rules |
-| Review finding arrives mid-work | Implementation sub-agent: step 9 review loop |
+| Full workflow applies | Design agent: steps 1–7 → Main agent: review plan → Implementation agent: steps 8–9 → Main agent: review results |
+| Stateful / status / freshness logic | Design agent also produces step 5 state-transition table |
+| Schema or data-shape change | Design agent also produces step 6 migration/backfill rules |
+| Review finding arrives mid-work | Implementation agent: step 9 review loop |
 
 ## Workflow
 
@@ -183,29 +183,29 @@ If the full workflow does not apply: **do NOT load** `references/templates.md` �
 
 If the full workflow applies:
 
-**MANDATORY — load `references/templates.md`**, then run two sub-agent phases:
+**MANDATORY — load `references/templates.md`**, then spawn two agent phases:
 
-### Phase 1: Design sub-agent (steps 1–7)
+### Phase 1: Design agent (steps 1–7)
 
-1. **Spawn a design sub-agent** (via the `Agent` tool) with a prompt that includes: the full task description, relevant file context, and an instruction to produce the complete Design/test plan (all applicable steps from the workflow, using the template from `references/templates.md`).
+1. **Spawn a design agent** with isolated context, with a prompt that includes: the full task description, relevant file context, and an instruction to produce the complete Design/test plan (all applicable steps from the workflow, using the template from `references/templates.md`).
 2. **Review the returned plan** against the Implementation gate checklist. Ask: "Which check is hardest to answer?" — that is the likeliest gap.
-3. **If gaps are found**: send the plan back to the sub-agent with specific feedback identifying the missing rules or uncovered paths. Accept the revision. Repeat at most once (2 rounds total). If round 2 is still insufficient, do not proceed — surface the remaining gap to the user with 2–3 proposed resolutions and ask them to choose.
+3. **If gaps are found**: send the plan back to the agent with specific feedback identifying the missing rules or uncovered paths. Accept the revision. Repeat at most once (2 rounds total). If round 2 is still insufficient, do not proceed — surface the remaining gap to the user with 2–3 proposed resolutions and ask them to choose.
 4. **Approve the plan.** Copy only the final approved plan into main context — not the deliberation.
 
-### Phase 2: Implementation sub-agent (steps 8–9)
+### Phase 2: Implementation agent (steps 8–9)
 
-1. **Spawn an implementation sub-agent** (via the `Agent` tool) with a prompt that includes: the approved plan verbatim, relevant file context, and an instruction to implement only against the test matrix and produce the Verification summary on completion.
+1. **Spawn an implementation agent** with isolated context, with a prompt that includes: the approved plan verbatim, relevant file context, and an instruction to implement only against the test matrix and produce the Verification summary on completion.
 2. **Review the returned Verification summary.** Check:
-   - Did the sub-agent implement against the test matrix (not ad hoc)?
+   - Did the agent implement against the test matrix (not ad hoc)?
    - Is the acceptance criteria trace complete?
    - Were any new special cases discovered and added to the matrix?
    - Are there open questions that need resolution before the work is done?
-3. **If the summary is incomplete or new cases were added without design coverage**: send feedback to the sub-agent for a follow-up pass. Repeat at most once. If round 2 is still insufficient, do not accept — surface the specific uncovered cases to the user with 2–3 proposed resolutions and ask them to choose before continuing.
+3. **If the summary is incomplete or new cases were added without design coverage**: send feedback to the agent for a follow-up pass. Repeat at most once. If round 2 is still insufficient, do not accept — surface the specific uncovered cases to the user with 2–3 proposed resolutions and ask them to choose before continuing.
 4. **Accept the result.** Copy only the final Verification summary into main context — not the implementation deliberation.
 
 ## Implementation gate
 
-Before approving Phase 2 output, ask: "Which of these checks is hardest to answer right now?" The hardest one is the likeliest gap — send the sub-agent back if any answer is no for a relevant category.
+Before approving Phase 2 output, ask: "Which of these checks is hardest to answer right now?" The hardest one is the likeliest gap — send the agent back if any answer is no for a relevant category.
 
 - Are source-of-truth and derived/read-time values separated?
 - Are partial and missing inputs specified?
@@ -216,8 +216,8 @@ Before approving Phase 2 output, ask: "Which of these checks is hardest to answe
 
 ## Verification summary
 
-When Phase 2 is complete, the Verification summary from `references/templates.md` is produced by the implementation sub-agent. **Do NOT load** `references/templates.md` a second time if it is already in context.
+When Phase 2 is complete, the Verification summary from `references/templates.md` is produced by the implementation agent. **Do NOT load** `references/templates.md` a second time if it is already in context.
 
 ## Structure note
 
-If this file exceeds 300 lines, move workflow steps 1–7 detail to `references/workflow-steps.md` and load it inside the design sub-agent prompt rather than the main SKILL.md body.
+If this file exceeds 300 lines, move workflow steps 1–7 detail to `references/workflow-steps.md` and load it inside the design agent prompt rather than the main SKILL.md body.
