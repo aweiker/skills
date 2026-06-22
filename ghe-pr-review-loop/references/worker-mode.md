@@ -12,11 +12,19 @@ from a previous run or crashed session never contaminate the current run's trend
 SCORES_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-scores.jsonl"
 QUALITY_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-quality.jsonl"
 PROGRESS_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-progress.log"
+REPLIED_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-replied.txt"
 > "$SCORES_LOG"
 > "$QUALITY_LOG"
 > "$PROGRESS_LOG"
-echo "Initialized session logs: $SCORES_LOG $QUALITY_LOG $PROGRESS_LOG"
+> "$REPLIED_LOG"
+echo "Initialized session logs: $SCORES_LOG $QUALITY_LOG $PROGRESS_LOG $REPLIED_LOG"
 ```
+
+`REPLIED_LOG` is the **reply idempotency ledger**. Every time a reply is successfully posted for
+a comment ID, that ID is appended to `REPLIED_LOG`. Before posting any reply, check whether the
+ID already appears in the ledger. This prevents duplicate replies within the same round (e.g.,
+when triage and verification both attempt to post) and across rounds (when a comment is selected
+again after a re-trigger).
 
 ## Rehydrate Current State
 
@@ -39,7 +47,9 @@ At the start of every round after the first, read the score log and halt if find
 declining. The score log lives at `/tmp/<SESSION_ID>-scores.jsonl` — one JSON line per completed
 round, appended at the end of each round. It is session-scoped and PR-specific.
 
-A declining trend means the bot is producing lower-quality findings than the previous round.
+A declining trend means the bot is producing substantially lower-quality findings than the
+previous round. The threshold is a **0.4 drop** (e.g., 1.0 → 0.5 halts, but 1.0 → 0.7 continues).
+Small declines are expected when transitioning from proactive CI fixes to mixed bot reviews.
 Zero findings is a perfect score (1.0) and exits via the approval gate before reaching this check.
 
 ```bash
@@ -53,18 +63,20 @@ prev, last = json.loads(lines[-2]), json.loads(lines[-1])
 
 prev_q = prev["avg_quality"]
 last_q = last["avg_quality"]
-declining = last_q < prev_q
+DECLINE_THRESHOLD = 0.4  # only halt if quality drops by more than this
+declining = (prev_q - last_q) > DECLINE_THRESHOLD
 
 print(f"SCORE_TREND={'declining' if declining else 'ok'}  "
-      f"prev_avg_quality={prev_q:.3f}  last_avg_quality={last_q:.3f}")
+      f"prev_avg_quality={prev_q:.3f}  last_avg_quality={last_q:.3f}  "
+      f"delta={prev_q - last_q:.3f}  threshold={DECLINE_THRESHOLD}")
 
 if declining:
     sys.exit(1)
 PY
   if [ $? -ne 0 ]; then
     cat > "$HANDOFF" <<EOF
-Stopped: finding quality declined round-over-round — further reviews are unlikely to produce
-high-quality findings. Human review recommended before continuing.
+Stopped: finding quality declined severely (>0.4 drop) round-over-round — further reviews are
+unlikely to produce high-quality findings. Human review recommended before continuing.
 Score log:
 $(cat "$SCORES_LOG")
 EOF
@@ -73,6 +85,72 @@ EOF
 fi
 ```
 
+## Post-Triage Quality Gate (Hard Gate — Before Any Fix Work)
+
+After triaging ALL findings in the current round but BEFORE writing any fix code, check the
+current round's quality. This is the hard gate that prevents fix work on low-value findings.
+
+The success condition for this loop is: **zero findings, or all findings are false
+positives/out-of-scope.** Fixing real defects is valuable work; fixing cleanup suggestions is
+acceptable but only while quality remains high. The moment the bot produces a round where the
+average quality is ≤ 0.5, the remaining findings are not worth the cost of fixing, CI-ing, and
+re-triggering.
+
+**Rules:**
+
+1. If ALL findings in this round scored ≤ 0.3 (false positive or out of scope): reply to all
+   with rebuttals, append the round score, write HANDOFF, and **stop**. Do not fix, do not
+   trigger another round. This is a successful exit — the bot has nothing real left to say.
+
+2. If the round's average quality is ≤ 0.5 (mix of low-value findings): reply to false
+   positives/out-of-scope with rebuttals, but DO NOT fix the 0.7-quality cleanup items.
+   Append the round score, write HANDOFF, and **stop**. Flag the unfixed cleanup items in
+   HANDOFF as "deferred cleanup" for human decision.
+
+3. If the round's average quality is > 0.5: proceed to fix actionable findings normally.
+
+This gate runs AFTER triage scores are written to `QUALITY_LOG` and BEFORE any `edit`, `write`,
+or code change command. The decision is:
+
+```bash
+QUALITY_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-quality.jsonl"
+ROUND_AVG=$(python3 -c "
+import json, sys
+findings = [json.loads(l) for l in open('$QUALITY_LOG') if l.strip()]
+avg = sum(f['quality'] for f in findings) / len(findings) if findings else 1.0
+print(f'{avg:.3f}')
+")
+echo "Post-triage quality gate: round_avg=$ROUND_AVG"
+
+# Gate decision
+python3 - "$QUALITY_LOG" <<'PY'
+import json, sys
+findings = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+if not findings:
+    print("GATE=proceed (no findings)")
+    sys.exit(0)
+avg = sum(f["quality"] for f in findings) / len(findings)
+all_low = all(f["quality"] <= 0.3 for f in findings)
+if all_low:
+    print(f"GATE=stop_all_low (avg={avg:.3f}, all findings ≤0.3)")
+    sys.exit(1)
+elif avg <= 0.5:
+    print(f"GATE=stop_low_avg (avg={avg:.3f})")
+    sys.exit(2)
+else:
+    print(f"GATE=proceed (avg={avg:.3f})")
+    sys.exit(0)
+PY
+GATE_EXIT=$?
+```
+
+If `GATE_EXIT` is 1 or 2: post non-actionable replies only, append score, write HANDOFF, stop.
+If `GATE_EXIT` is 0: proceed to fix actionable findings.
+
+**This gate is non-negotiable.** Do not rationalize past it with "but I can fix this easily" or
+"it's only one small change." The cost is not the fix — it's the CI cycle, the re-trigger, and
+the next round of even-lower-quality findings that the fix invites.
+
 ## Preflight: Existing Comments and Approval Gate
 
 Use this decision table before any review trigger. Do not improvise a different order:
@@ -80,13 +158,19 @@ Use this decision table before any review trigger. Do not improvise a different 
 | State | Action |
 | --- | --- |
 | Existing root inline comments have no threaded reply | Do **not** trigger a review. Treat those comments as the selected comment set and fix/reply them first. |
-| No unaddressed root inline comments, and a fresh comment-based approval/no-action signal exists | Do **not** trigger a review. Write HANDOFF and stop. |
-| No unaddressed root inline comments, and no fresh approval/no-action signal exists | Trigger one new review. |
+| No unaddressed root inline comments, and a fresh **explicit** approval signal exists | Do **not** trigger a review. Write HANDOFF and stop. |
+| No unaddressed root inline comments, and no explicit approval signal | **Trigger one new review.** This is the common case after a previous round addressed all findings. |
 
-Approval signal is comment-based: a top-level PR issue comment or PR review body that clearly
-indicates approval/no further action for the current head — e.g. `approved`, `lgtm`, `looks good`,
-`no actionable findings`, `no changes requested`. Do not treat stale approvals (before the current
-head commit) as a gate.
+**Critical**: "all comments already have replies" is NOT an approval signal. It means prior
+findings were handled and the PR is ready for a fresh bot review pass. The ONLY stop signal is an
+explicit approval comment (see below). If no such comment exists and rounds remain, you MUST
+trigger a new review — do not stop just because there is nothing currently unaddressed.
+
+Approval signal is an **explicit** comment-based statement: a top-level PR issue comment or PR
+review body that clearly indicates approval/no further action for the current head — e.g.
+`approved`, `lgtm`, `looks good`, `no actionable findings`, `no changes requested`. Do not treat
+stale approvals (before the current head commit) as a gate. Do not infer approval from the absence
+of unaddressed comments — that only means prior work is done, not that the PR is approved.
 
 ```bash
 INLINE_COMMENTS_JSON="/tmp/${SESSION_ID:-ghe-pr-review-loop}-inline-comments-preflight.json"
@@ -127,6 +211,7 @@ APPROVAL_PRESENT=$(jq -r --slurpfile issue_comments "$ISSUE_COMMENTS_JSON" --arg
     (($timestamp // "1970-01-01T00:00:00Z") | fromdateiso8601) >= $head_epoch;
   (([$issue_comments[0][]?
       | select(((.body // "") | contains("PR-Bot Control-Panel") | not)
+          and ((.body // "") | test("^/review$") | not)
           and ((.body // "") | approval_text)
           and after_current_head(.created_at))
     ] | length) > 0)
@@ -180,62 +265,9 @@ Only run this section when preflight set `REVIEW_TRIGGER_REQUIRED=yes`.
 ```bash
 test "${REVIEW_TRIGGER_REQUIRED:-}" = "yes" || { echo "Internal workflow error: trigger section reached with REVIEW_TRIGGER_REQUIRED=${REVIEW_TRIGGER_REQUIRED:-unset}" >&2; exit 2; }
 
-CONTROL_COMMENT_ID=$(
-  gh api "$GHE_API/repos/$OWNER_REPO/issues/$PR/comments" --paginate \
-    | jq -r '.[] | select((.body // "") | contains("PR-Bot Control-Panel") and contains("🔍 Review")) | .id' \
-    | tail -n 1
-)
-test -n "$CONTROL_COMMENT_ID" || { echo "No PR bot control-panel comment found" >&2; exit 1; }
-```
-
-Clear the review checkbox first:
-
-```bash
-CONTROL_PANEL_FILE="/tmp/${SESSION_ID:-ghe-pr-review-loop}-control-panel.md"
-gh api "$GHE_API/repos/$OWNER_REPO/issues/comments/$CONTROL_COMMENT_ID" \
-  | jq -r '.body' > "$CONTROL_PANEL_FILE"
-
-CONTROL_PANEL_FILE="$CONTROL_PANEL_FILE" python3 - <<'PY'
-import os
-from pathlib import Path
-path = Path(os.environ['CONTROL_PANEL_FILE'])
-body = path.read_text()
-lines = []
-for line in body.splitlines():
-    if '🔍 Review' in line:
-        line = line.replace('- [x]', '- [ ]').replace('- [X]', '- [ ]')
-    lines.append(line)
-path.write_text('\n'.join(lines) + ('\n' if body.endswith('\n') else ''))
-PY
-
-gh api -X PATCH "$GHE_API/repos/$OWNER_REPO/issues/comments/$CONTROL_COMMENT_ID" \
-  -f body="$(cat "$CONTROL_PANEL_FILE")" >/dev/null
-
-# The bot fires on an unchecked→checked edge transition, not on state.
-# Without this pause the re-check arrives before GHE has recorded the unchecked state.
-sleep 3
-```
-
-Then re-check it:
-
-```bash
-CONTROL_PANEL_FILE="/tmp/${SESSION_ID:-ghe-pr-review-loop}-control-panel.md"
-CONTROL_PANEL_FILE="$CONTROL_PANEL_FILE" python3 - <<'PY'
-import os
-from pathlib import Path
-path = Path(os.environ['CONTROL_PANEL_FILE'])
-body = path.read_text()
-lines = []
-for line in body.splitlines():
-    if '🔍 Review' in line:
-        line = line.replace('- [ ]', '- [x]')
-    lines.append(line)
-path.write_text('\n'.join(lines) + ('\n' if body.endswith('\n') else ''))
-PY
-
 TRIGGER_EPOCH=$(date -u +%s)
-gh api -X PATCH "$GHE_API/repos/$OWNER_REPO/issues/comments/$CONTROL_COMMENT_ID" \
-  -f body="$(cat "$CONTROL_PANEL_FILE")" >/dev/null
+gh api -X POST "$GHE_API/repos/$OWNER_REPO/issues/$PR/comments" \
+  -f body="/review" >/dev/null
 ```
 
 ## Wait for Review Completion
@@ -261,11 +293,11 @@ done
 if [ "$NEW_REVIEW_COUNT" -eq 0 ] && [ "$NEW_INLINE_COUNT" -eq 0 ]; then
   WORKTREE_STATUS=$(git status --short --branch)
   cat > "$HANDOFF" <<EOF
-Blocker: no new review or inline comments appeared within 15 minutes of triggering the bot.
-The checkbox was toggled (clear → re-check) but the bot did not respond. Possible causes:
+Blocker: no new review or inline comments appeared within 15 minutes of posting /review.
+The /review comment was posted but the bot did not respond. Possible causes:
 - Bot service is down or the webhook did not fire.
-- The control-panel comment ID is wrong (check CONTROL_COMMENT_ID).
-- The 3-second pause between uncheck and re-check was insufficient for this GHE instance.
+- The bot does not monitor issue comments on this repo (check bot configuration).
+- The bot requires a different trigger command.
 Latest head: $(git rev-parse --short HEAD)
 Fixed: none
 Rejected/qualified: none
@@ -375,6 +407,8 @@ QUALITY_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-quality.jsonl"
 # Clear findings from the previous round — each round is scored independently.
 # (Session-level initialization already cleared this at startup; this clears between rounds.)
 > "$QUALITY_LOG"
+# NOTE: Do NOT clear REPLIED_LOG between rounds. Once a comment has been replied to, it must
+# never receive a second reply regardless of which round re-encounters it.
 # After scoring each comment, append one line:
 #   Verified actionable defect (fixed):
 #     echo '{"id":<COMMENT_ID>,"quality":1.0,"scope_creep":false}' >> "$QUALITY_LOG"
@@ -401,10 +435,14 @@ commit, or push — there is nothing to fix. This is a clean no-op loop, not a f
 Every selected root inline comment gets exactly one inline reply — no exceptions. Classification
 determines the reply content, not whether a reply is sent.
 
+**Important ordering:** Triage ALL findings first → run post-triage quality gate → only then
+proceed to fix work for actionable findings. If the gate says stop, post non-actionable replies
+and exit without fixing anything.
+
 | Classification | Action | Reply required? |
 | --- | --- | --- |
-| Actionable defect | Fix with tests | Yes — after commit/push, before CI wait |
-| Actionable cleanup | Fix if low risk and in-scope | Yes — after commit/push, before CI wait |
+| Actionable defect | Fix with tests (only if gate passed) | Yes — after commit/push, before CI wait |
+| Actionable cleanup | Fix if low risk and in-scope (only if gate passed) | Yes — after commit/push, before CI wait |
 | False positive | No code change; prepare rebuttal with evidence | Yes — immediately after classification |
 | Out of scope | No code change; create durable issue if repo rules require | Yes — immediately after classification |
 
@@ -425,7 +463,8 @@ For each selected root inline comment:
    - expected final reply text without a commit SHA yet
 8. Do **not** post inline replies yet, including false-positive or out-of-scope replies. Batch
    all replies after final validation/commit/push/CI verification to avoid mixed state and duplicate
-   responses.
+   responses. **Each comment ID gets exactly one reply per session** — the reply idempotency
+   ledger (`REPLIED_LOG`) enforces this even if a comment is processed in multiple phases.
 
 After all classifications are complete:
 
@@ -447,15 +486,30 @@ After all classifications are complete:
 Post replies for false-positive and out-of-scope findings immediately after classification — before
 commit, push, or CI. These replies carry no SHA reference and are not blocked by CI state.
 
-```bash
-HEAD_SHA=$(git rev-parse --short HEAD)
-# False positive:
-gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
-  -f body="Not changed. This finding is incorrect because <evidence>. <Why the proposed change is harmful, deprecated, or conflicts with an invariant>." >/dev/null
+**Before posting each reply**, check the reply idempotency ledger. If the comment ID is already
+in `REPLIED_LOG`, skip it — a reply was already posted for this finding in this session:
 
-# Out of scope:
-gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
-  -f body="Not addressed in this PR — this change is outside the scope of the current diff. Tracked in <issue link or 'will create a follow-up issue'>." >/dev/null
+```bash
+REPLIED_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-replied.txt"
+# Guard: skip if already replied
+if grep -qx "$COMMENT_ID" "$REPLIED_LOG" 2>/dev/null; then
+  echo "Skipping reply to $COMMENT_ID — already replied this session"
+else
+  # False positive:
+  gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
+    -f body="Not changed. This finding is incorrect because <evidence>. <Why the proposed change is harmful, deprecated, or conflicts with an invariant>." >/dev/null
+  echo "$COMMENT_ID" >> "$REPLIED_LOG"
+fi
+
+# Guard: skip if already replied
+if grep -qx "$COMMENT_ID" "$REPLIED_LOG" 2>/dev/null; then
+  echo "Skipping reply to $COMMENT_ID — already replied this session"
+else
+  # Out of scope:
+  gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
+    -f body="Not addressed in this PR — this change is outside the scope of the current diff. Tracked in <issue link or 'will create a follow-up issue'>." >/dev/null
+  echo "$COMMENT_ID" >> "$REPLIED_LOG"
+fi
 ```
 
 ## Push and Wait for CI
@@ -518,10 +572,16 @@ Do not use top-level PR comments for inline review findings.
   reply to report a final CI state.
 
 ```bash
+REPLIED_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-replied.txt"
 HEAD_SHA=$(git rev-parse --short HEAD)
-# Fixed finding — keep body to 2-4 sentences; CI state is "pending" at reply time:
-gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
-  -f body="Fixed in $HEAD_SHA. <One sentence: what approach was taken and why it addresses the finding>. Validation: <tool(s)> passed (e.g. '35/35 tests, lint, build, boundary check'). CI: pending." >/dev/null
+# Fixed finding — guard against duplicate reply:
+if grep -qx "$COMMENT_ID" "$REPLIED_LOG" 2>/dev/null; then
+  echo "Skipping reply to $COMMENT_ID — already replied this session"
+else
+  gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
+    -f body="Fixed in $HEAD_SHA. <One sentence: what approach was taken and why it addresses the finding>. Validation: <tool(s)> passed (e.g. '35/35 tests, lint, build, boundary check'). CI: pending." >/dev/null
+  echo "$COMMENT_ID" >> "$REPLIED_LOG"
+fi
 ```
 
 **Good reply examples** (from real PRs in this repo):

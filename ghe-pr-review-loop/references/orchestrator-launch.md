@@ -45,29 +45,104 @@ pgrep -af "($SESSION_ID|/tmp/$SESSION_ID-prompt.md)"
 pstree -ap "$WORKER_PID" 2>/dev/null || true
 ```
 
-## 4. Report Launch Status
+## 4. Spawn Status Poller
 
-Return only:
+After the worker is confirmed alive, spawn a background poller that writes consolidated status
+to `/tmp/<SESSION_ID>-status.txt` every 30 seconds. The poller exits when the handoff file
+appears or the worker PID dies.
+
+```bash
+cat > "/tmp/$SESSION_ID-poller.sh" <<'POLLER'
+#!/usr/bin/env bash
+set -eu
+SESSION_ID="$1"
+WORKER_PID="$2"
+PROGRESS_LOG="/tmp/${SESSION_ID}-progress.log"
+HANDOFF="/tmp/${SESSION_ID}-handoff.md"
+STATUS="/tmp/${SESSION_ID}-status.txt"
+
+while true; do
+  {
+    echo "--- Status as of $(date -u +%Y-%m-%dT%H:%M:%SZ) ---"
+    if [ -f "$HANDOFF" ]; then
+      echo "STATE: COMPLETED"
+      echo ""
+      cat "$HANDOFF"
+    elif kill -0 "$WORKER_PID" 2>/dev/null; then
+      echo "STATE: RUNNING (PID $WORKER_PID)"
+      echo ""
+      if [ -s "$PROGRESS_LOG" ]; then
+        echo "Progress:"
+        cat "$PROGRESS_LOG"
+      else
+        echo "Progress: (no rounds completed yet)"
+      fi
+    else
+      echo "STATE: DEAD (worker exited without handoff)"
+      echo ""
+      if [ -s "$PROGRESS_LOG" ]; then
+        echo "Last progress:"
+        cat "$PROGRESS_LOG"
+      fi
+    fi
+  } > "$STATUS"
+
+  # Exit conditions
+  [ -f "$HANDOFF" ] && exit 0
+  kill -0 "$WORKER_PID" 2>/dev/null || exit 1
+
+  sleep 30
+done
+POLLER
+chmod +x "/tmp/$SESSION_ID-poller.sh"
+nohup "/tmp/$SESSION_ID-poller.sh" "$SESSION_ID" "$WORKER_PID" >/dev/null 2>&1 &
+POLLER_PID=$!
+echo "$POLLER_PID" > "/tmp/$SESSION_ID-poller.pid"
+```
+
+## 5. Report Launch Status and Poll
+
+First, report the spawn:
 
 ```text
 Spawned worker pi.
 Session: <SESSION_ID>
 PID file: /tmp/<SESSION_ID>.pid
-Log: <LOG>
+Poller PID: /tmp/<SESSION_ID>-poller.pid
+Status file: /tmp/<SESSION_ID>-status.txt
 Handoff: <HANDOFF>
 Worktree: <WORKTREE>
 ```
 
+Then immediately begin polling the status file. Wait 60 seconds after launch, then read
+`/tmp/<SESSION_ID>-status.txt`. If the state is `COMPLETED` or `DEAD`, report the final result.
+If still `RUNNING`, report the current progress and poll again after another 60 seconds. Continue
+until the worker finishes or the user interrupts. This avoids the user having to manually ask for
+status updates.
+
+```bash
+sleep 60
+cat "/tmp/$SESSION_ID-status.txt" 2>/dev/null || echo "(not yet available)"
+```
+
+Repeat until state is no longer `RUNNING`. When `COMPLETED`, present the handoff content as the
+final result.
+
 ## Status Checks
 
-When the user asks for status, avoid importing large logs. Read the progress log first — it contains
-one block per completed round and is always up to date regardless of log verbosity:
+When the user asks for status, read the consolidated status file first — it is updated every 30
+seconds by the background poller and contains the current state, progress, or full handoff:
+
+```bash
+cat "/tmp/$SESSION_ID-status.txt" 2>/dev/null || echo "(status file not yet created)"
+```
+
+If the status file is stale or missing, fall back to direct checks:
 
 ```bash
 cat "/tmp/$SESSION_ID.pid" 2>/dev/null || true
-pgrep -af "($SESSION_ID|/tmp/$SESSION_ID-prompt.md)" || true
+kill -0 "$(cat /tmp/$SESSION_ID.pid 2>/dev/null)" 2>/dev/null && echo "Worker: alive" || echo "Worker: dead"
 cat "/tmp/$SESSION_ID-progress.log" 2>/dev/null || echo "(no rounds completed yet)"
-tail -n 20 "$LOG" 2>/dev/null || true
 test -f "$HANDOFF" && cat "$HANDOFF"
 ```
 
@@ -75,8 +150,10 @@ test -f "$HANDOFF" && cat "$HANDOFF"
 
 ```bash
 PID=$(cat "/tmp/$SESSION_ID.pid" 2>/dev/null || true)
+POLLER_PID=$(cat "/tmp/$SESSION_ID-poller.pid" 2>/dev/null || true)
 [ -n "$PID" ] && pkill -TERM -P "$PID" 2>/dev/null || true
 [ -n "$PID" ] && kill -TERM "$PID" 2>/dev/null || true
+[ -n "$POLLER_PID" ] && kill -TERM "$POLLER_PID" 2>/dev/null || true
 pgrep -af "($SESSION_ID|/tmp/$SESSION_ID-prompt.md)" || true
 ```
 

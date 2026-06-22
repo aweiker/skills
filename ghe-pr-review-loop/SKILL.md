@@ -40,13 +40,20 @@ before anyone can act on the result.
 behaves like a normal push but sets a misleading pattern in branch history. Use it only when
 amending an already-pushed review-fix commit.
 
+**NEVER post a reply to a comment ID without checking `REPLIED_LOG` first.** The worker processes
+findings in two phases (non-actionable before push, actionable after push) and may re-encounter
+the same comment ID during verification or the next round's preflight. Always `grep -qx
+"$COMMENT_ID" "$REPLIED_LOG"` before calling the replies API endpoint. If the ID is already in
+the ledger, skip it. This prevents duplicate/contradictory replies within a round and across
+rounds.
+
 **NEVER treat the PR-Bot control-panel comment as an approval signal.** It always contains words
 that match approval patterns (e.g. "Review"). Matching against it produces false positives on every
 run. The preflight jq explicitly excludes comments containing "PR-Bot Control-Panel".
 
-**NEVER re-check the checkbox without first clearing it and sleeping 3 seconds.** GitHub's event
-pipeline fires on an unchecked→checked edge transition, not on state. If the re-check arrives
-before GHE has recorded the unchecked state, the bot trigger is silently dropped.
+**NEVER post multiple `/review` trigger comments in rapid succession.** One `/review` comment per
+round is sufficient. Posting duplicates before the bot responds wastes API calls and may confuse
+the bot into producing duplicate review passes.
 
 **NEVER rely on GitHub's formal `APPROVED` review state as the approval gate.** This workflow uses
 comment-based approval signals only. Formal review state can lag, be stale, or come from a
@@ -56,9 +63,17 @@ different head. Use `jq` to match comment text against the current head epoch in
 false positive, reply with evidence — do not churn code. Stop after the requested loop count, and
 never exceed 8 rounds regardless of loop count or "until clean" mode.
 
-**NEVER continue when finding quality is declining.** Each finding is scored by quality (1.0 =
-actionable defect, 0.7 = cleanup, 0.3 = out of scope, 0.0 = false positive). If the round average
-drops vs the prior round, the bot is producing lower-value findings — stop and surface to the human.
+**NEVER continue when finding quality is severely declining.** Each finding is scored by quality
+(1.0 = actionable defect, 0.7 = cleanup, 0.3 = out of scope, 0.0 = false positive). Two gates
+enforce this:
+
+1. **Post-triage gate (within a round):** After triaging all findings but BEFORE any fix work,
+   check the round's average. If all findings scored ≤0.3, or the round average is ≤0.5, stop
+   immediately — reply to non-actionable findings and write HANDOFF. Do not fix, push, or
+   re-trigger. This prevents fixing low-value suggestions that invite more low-value suggestions.
+
+2. **Round-over-round gate (between rounds):** If the previous round's avg_quality dropped by
+   more than 0.4 vs the round before it, do not start the next round.
 
 **NEVER silently act on scope-creep findings.** A finding that would expand the diff beyond its
 current file set, refactor adjacent code, or address a systemic issue belongs in a separate PR.

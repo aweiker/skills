@@ -116,13 +116,17 @@ If repo-local artifacts are undesirable, use `/tmp/targeted-review-<repo>-<pr>/`
 
 ```bash
 mkdir -p .targeted-review/claude
-claude --permission-mode plan --disallowedTools Edit Write NotebookEdit MultiEdit -p "$(cat <<'PROMPT'
+claude --tools "Bash,Read" --permission-mode plan -p "$(cat <<'PROMPT'
 You are performing one focused, read-only review pass for this repository/branch.
 
 [focused prompt]
 PROMPT
 )" > .targeted-review/claude/01-pass-name.md
 ```
+
+`--tools "Bash,Read"` is an allowlist — only those tools are available. This is safer than a
+deny list (`--disallowedTools`) because new tools added in future Claude Code versions are
+automatically excluded, and there are no tool-name typo risks.
 
 If tool restrictions fail in the local environment, fall back to a clear read-only prompt and keep artifacts untracked.
 
