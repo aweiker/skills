@@ -262,6 +262,7 @@ Key characteristics:
 - No dead-agent detection in wait loops
 - Handoff file expected but no timeout or fallback
 - Worker prompts that could trigger further delegation (unbounded depth)
+- Script generation from templates instead of static scripts with config input
 
 **Green flags** (high score):
 
@@ -272,6 +273,28 @@ Key characteristics:
 - Heartbeat logging during long waits
 - Worker prompts that explicitly say "do not spawn another instance"
 - Handoff contract clearly documented (what fields, what format)
+- **Static executable script** that the agent invokes with a config file (not generates)
+- Config validation at startup with clear error messages
+- Script is lintable (shellcheck-clean) and testable independently of the agent
+
+**Static scripts vs generated scripts**:
+
+This is a hard rule, not a preference. If a skill orchestrates processes via bash:
+
+| Approach | Verdict |
+|----------|--------|
+| Static script + config file input | Correct — testable, fixable, agent-proof |
+| Template with `<BRACKETS>` for agent substitution | Wrong — untested, fragile, agent can hallucinate logic |
+| Agent generates script from prose instructions | Worst — completely unreproducible |
+
+The agent’s job when using an Orchestrator skill is to WRITE DATA (config) and INVOKE a program
+(the static script). The agent must NEVER write or modify the program itself. This separation
+prevents the most common orchestrator failure mode: the agent "helpfully" adjusting pipeline
+logic while filling in a template, introducing subtle behavioral changes that no test catches.
+
+Deduct 3-4 points from D9 if a skill uses template-based script generation when a static script
+with config input would work. Deduct the full dimension (score 0-2) if the skill has the agent
+generate arbitrary bash from prose instructions.
 
 **Evaluation questions**:
 
@@ -280,6 +303,9 @@ Key characteristics:
 3. Can the invoking session monitor progress without attaching to the child?
 4. Is there a way to steer (skip, pause, abort) without killing everything?
 5. Is delegation depth bounded?
+6. Is the orchestration script a tested, static artifact? Or is it generated per-run?
+7. Can the script be validated independently (`bash -n`, `shellcheck`)?
 
 **The test**: Run the mental model of "kill -9 the parent at every phase boundary" and check
-if the skill's design handles each scenario.
+if the skill's design handles each scenario. Then ask: "If I run this skill 10 times, do I
+get the same script 10 times?" If yes (static) — good. If no (generated) — bad.

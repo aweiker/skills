@@ -180,3 +180,27 @@ Fix: Use "MANDATORY" triggers only at the decision point where content is needed
 Signal: If a skill has 4+ reference files and loads them all unconditionally,
         it's consuming context that later tool calls and user messages need.
 ```
+
+## Pattern 16: The Generated Script (pi-specific)
+
+```text
+Symptom: Skill instructs the agent to generate a bash script by substituting
+         bracketed placeholders in a template, then execute the generated artifact
+Check: Could this be a static, tested script that reads config from a file?
+Root cause: Author assumed the script needs to be customized per-run, when
+            actually only the INPUT DATA changes — not the logic
+Fix: Ship a static executable script with the skill. The agent's job is ONLY
+     to write a config file (shell-sourceable, JSON, or env) and invoke the
+     static script with that config as input.
+Signal: Any `references/` file named "template" that contains <BRACKETED>
+        placeholders meant for agent substitution. Any instruction like
+        "generate a script", "substitute these values", or "write to
+        /tmp/.../pipeline.sh".
+Why this matters:
+- Generated scripts are never tested — each invocation is a unique snowflake
+- Substitution errors are silent (a missed placeholder = runtime bash error)
+- The AI can hallucinate logic changes when "customizing" the template
+- Bug fixes don't propagate to already-running instances
+- Static scripts can be shellchecked, version-controlled, and reviewed
+- The agent cannot accidentally modify pipeline behavior if it only writes data
+```

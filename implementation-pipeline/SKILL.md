@@ -193,10 +193,11 @@ Auto-detect or ask the user:
 | `TIMEOUT_REVIEW` | Max time for self-review phase (seconds) | 1200 (20 min) |
 | `TIMEOUT_BOT` | Max time for bot review loop (seconds) | 2400 (40 min) |
 
-### 2. Generate the pipeline script
+### 2. Generate the config file and launch
 
-**MANDATORY — READ ENTIRE FILE**: Load `references/pipeline-script-template.md` before generating
-the script. Substitute all bracketed values. Write to `/tmp/impl-pipeline-<timestamp>/pipeline.sh`.
+**MANDATORY — READ ENTIRE FILE**: Load `references/pipeline-config-format.md` before generating
+the config. It defines all required and optional fields, how to derive values, and what the
+agent MUST NOT do.
 
 **Do NOT load** `references/usage-examples.md` during generation — it is user-facing documentation
 only.
@@ -204,30 +205,44 @@ only.
 **Do NOT load** `references/worked-example.md` during generation — it is for debugging and
 explaining output format only.
 
-Key behaviors of the generated script:
+The pipeline logic lives in `pipeline.sh` (a static, tested, lintable script in this skill
+directory). The agent's ONLY job is:
+1. Gather inputs (issue numbers, repo, remote)
+2. Write a config file (shell-sourceable)
+3. Launch `pipeline.sh <config-file>` in tmux
+
+The agent does NOT generate bash scripts. The agent does NOT modify `pipeline.sh`.
+All pipeline behavior is controlled by config values.
+
+Key behaviors of `pipeline.sh`:
+- Validates config at startup (exits with clear errors if invalid)
 - Sequential execution — each issue completes (or fails) before the next starts
 - Pulls main between issues so later issues build on earlier merges
 - Each phase spawns a `pi` instance with the appropriate skill
-- Waits for handoff files as completion signals
+- Waits for handoff files as completion signals with dead-PID detection
 - Logs everything to a consolidated log file
-- Writes machine-readable status to `$LOG_DIR/status.json` at each phase transition
+- Writes machine-readable status to `$LOG_DIR/status.json` (atomic writes)
 - On phase failure: logs the error, skips to next issue (does not abort the whole batch)
-- On merge: uses `--admin` flag if available, falls back to API merge
-- Traps EXIT/INT/TERM to kill child PIDs (no orphan processes)
+- On merge: polls CI with timeout, uses `--admin` flag, falls back to API merge
+- Traps INT/TERM to kill child process groups (no orphan processes)
 - Detects existing PRs for a branch and skips (does not destroy in-progress work)
 - Checks `$LOG_DIR/control` for steering commands between phases
+- Escalates kill: SIGTERM → 3s grace → SIGKILL
 
 ### 3. Launch in tmux
 
 ```bash
+SKILL_DIR="$HOME/.pi/agent/skills/implementation-pipeline"
+CONFIG="/tmp/impl-pipeline-$(date +%s)/config.sh"
+
 tmux kill-session -t impl-pipeline 2>/dev/null || true
-tmux new-session -d -s impl-pipeline -n loop "/tmp/impl-pipeline-<timestamp>/pipeline.sh; exec bash"
+tmux new-session -d -s impl-pipeline -n loop "$SKILL_DIR/pipeline.sh $CONFIG; exec bash"
 ```
 
 If `tmux` is not available, fall back to `nohup` + background:
 ```bash
-nohup /tmp/impl-pipeline-<timestamp>/pipeline.sh > /tmp/impl-pipeline-<timestamp>/loop.log 2>&1 &
-echo $! > /tmp/impl-pipeline-<timestamp>/pipeline.pid
+nohup $SKILL_DIR/pipeline.sh $CONFIG > /tmp/impl-pipeline-*/loop.log 2>&1 &
+echo $! > /tmp/impl-pipeline-*/pipeline.pid
 ```
 
 ### 4. Report launch
@@ -235,11 +250,13 @@ echo $! > /tmp/impl-pipeline-<timestamp>/pipeline.pid
 ```text
 Implementation pipeline launched.
 Session: impl-pipeline (tmux)
+Script:  $SKILL_DIR/pipeline.sh
+Config:  $CONFIG
 Issues: #X, #Y, #Z
-Log: /tmp/impl-pipeline-<timestamp>/loop.log
-Status: /tmp/impl-pipeline-<timestamp>/status.json
-Control: /tmp/impl-pipeline-<timestamp>/control
-Monitor: tail -f /tmp/impl-pipeline-<timestamp>/loop.log
+Log: $LOG_DIR/loop.log
+Status: $LOG_DIR/status.json
+Control: echo 'pause' > $LOG_DIR/control
+Monitor: tail -f $LOG_DIR/loop.log
 Attach: tmux attach -t impl-pipeline
 ```
 
@@ -286,8 +303,10 @@ Before starting the next phase, ask:
 SESSION_ID, LOG, HANDOFF). The ghe-pr-review-loop skill owns its own worker contract — do NOT
 paste the full requirements list. A minimal activation prompt is sufficient.
 
-**Phase 5 fallback**: If `gh pr merge` fails (worktree git issues), fall back to the API merge
-endpoint. Pull main in the canonical repo after merge. Wait 10s before next issue.
+**Phase 5 fallback**: If `gh pr merge` fails, the script falls back to the API merge endpoint
+automatically. It polls CI with a timeout loop (not a fixed sleep). It removes the worktree
+before merge so `--delete-branch` doesn't fail on a local ref lock. All this logic is in
+`pipeline.sh` — the agent never handles merge directly.
 
 ## Failure Handling
 
@@ -346,6 +365,8 @@ and "Cleaning Up After a Failed Run" sections.
 
 ## Anti-patterns
 
+- **NEVER generate or modify `pipeline.sh`.** It is a tested, static artifact. The agent writes a config file and launches the script — nothing else. If the script has a bug, fix it in the skill repo, not inline.
+- **NEVER write ad-hoc bash scripts** that replicate pipeline logic. The static script exists specifically to prevent agent hallucination of pipeline behavior.
 - **NEVER run two pipelines against the same repository concurrently.** Merge conflicts will cascade.
 - **NEVER skip `make check`** (or equivalent) between implementation and PR push.
 - **NEVER merge with red CI.** If the bot review introduced a failure, the pipeline must stop that issue and move on.

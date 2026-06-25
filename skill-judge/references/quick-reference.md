@@ -54,6 +54,8 @@
 │    [ ] Handoff file contract documented                                 │
 │    [ ] Delegation depth bounded                                         │
 │    [ ] Worker prompts say "do not spawn another instance"               │
+│    [ ] Static script invoked with config (NOT generated from template)  │
+│    [ ] Script is shellcheck-clean and independently testable            │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```

@@ -169,6 +169,11 @@ Everything else is invisible until activation.
 delegates to subagents, or manages long-running workflows. For skills that do all work inline
 (Mindset, Tool, most Navigation patterns), score D9 as N/A and adjust the max total to 120.
 
+**Static script rule**: If the skill orchestrates via bash, it MUST ship a static executable
+script and have the agent write only a config file. Template-based script generation (agent
+substitutes `<BRACKETS>`) is a scoring penalty: -3 to -4 points. Agent-generated arbitrary
+bash from prose is an automatic 0-2.
+
 **When evaluating an unfamiliar domain**: weight D4, D5, D7, and D8 heavily — these are
 domain-agnostic. Flag D1, D2, and D3 as "domain expertise required" and note the limitation in your
 report rather than guessing.
@@ -205,6 +210,10 @@ report rather than guessing.
 - **NEVER** penalize a skill for not using `subagent` — delegation is an optimization, not a
   requirement. Only flag it when a skill tries to do too much inline and clearly exceeds what a
   single context window can handle reliably.
+- **NEVER** accept template-based script generation in Orchestrator skills as acceptable design.
+  If the skill has the agent substitute `<BRACKETS>` in a template to produce a runnable script,
+  that is Pattern 16 (The Generated Script) and D9 should be penalized. The correct design is a
+  static, tested script that accepts a config file as input.
 
 ---
 
