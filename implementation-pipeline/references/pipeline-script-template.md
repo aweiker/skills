@@ -7,7 +7,9 @@ Generate this script by substituting all `<BRACKETED>` values. Write to
 
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
+# NOTE: no `set -e` — errors are handled explicitly per phase.
+# `set -u` catches typos, `pipefail` catches mid-pipeline failures.
 
 # Implementation Pipeline — generated <TIMESTAMP>
 # Issues: <ISSUE_LIST_DISPLAY>
@@ -21,6 +23,7 @@ REVIEW_LOOP_COUNT=<REVIEW_LOOP_COUNT>
 TIMEOUT_IMPL=<TIMEOUT_IMPL>
 TIMEOUT_REVIEW=<TIMEOUT_REVIEW>
 TIMEOUT_BOT=<TIMEOUT_BOT>
+TIMEOUT_CI=600  # 10 minutes max to wait for CI
 SKIP_REVIEW="${SKIP_REVIEW:-0}"
 SKIP_BOT="${SKIP_BOT:-0}"
 SKIP_SCOPE_GATE="${SKIP_SCOPE_GATE:-0}"
@@ -38,17 +41,30 @@ CHILD_PIDS=()
 CURRENT_AGENT_PID=""
 
 cleanup() {
-  log "Pipeline interrupted — killing child processes"
-  for pid in "${CHILD_PIDS[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
-      log "  Killed PID $pid"
+  local exit_code=$?
+  log "Pipeline interrupted (exit=$exit_code) — killing child processes"
+  for pid in "${CHILD_PIDS[@]:-}"; do
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      # Kill entire process group to catch pi's children
+      kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      log "  Sent TERM to PID $pid"
+    fi
+  done
+  # Give children 5s to exit, then force kill
+  sleep 5
+  for pid in "${CHILD_PIDS[@]:-}"; do
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+      log "  Force-killed PID $pid"
     fi
   done
   write_status "killed" "" "" "" "" ""
   log "Cleanup complete. Check $LOG_DIR/loop.log for final state."
+  exit "$exit_code"
 }
-trap cleanup EXIT INT TERM
+trap cleanup INT TERM
+# NOTE: EXIT trap not set — we disarm on clean exit. If we set EXIT here,
+# it fires on every `exit 0` including clean completion.
 
 # ── Utility functions ────────────────────────────────────
 log() {
@@ -57,7 +73,8 @@ log() {
 
 write_status() {
   local state="$1" issue="$2" phase="$3" pid="$4" pr="$5" phase_start="$6"
-  cat > "$LOG_DIR/status.json" <<STATUSEOF
+  # Atomic write: write to tmp then mv to prevent partial reads
+  cat > "$LOG_DIR/status.json.tmp" <<STATUSEOF
 {
   "pipeline_state": "$state",
   "started_at": "$PIPELINE_START",
@@ -72,6 +89,7 @@ write_status() {
   "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 STATUSEOF
+  mv "$LOG_DIR/status.json.tmp" "$LOG_DIR/status.json"
 }
 
 check_control() {
@@ -87,42 +105,112 @@ check_control() {
 }
 
 wait_for_handoff() {
+  # Wait for a handoff file to appear with dead-PID detection and heartbeat.
+  #
+  # The handoff file is expected to be written atomically by the agent:
+  # write to a .tmp file then mv. If your agent writes directly, there's a
+  # small race window — we mitigate by checking file is non-empty.
   local handoff_file="$1"
   local timeout="$2"
   local agent_pid="${3:-}"
   local elapsed=0
-  while [ ! -f "$handoff_file" ] && [ $elapsed -lt $timeout ]; do
-    # If we know the agent PID and it died, stop waiting early
+
+  while [ $elapsed -lt "$timeout" ]; do
+    # Check if handoff file exists AND is non-empty (guards against partial writes)
+    if [ -f "$handoff_file" ] && [ -s "$handoff_file" ]; then
+      return 0
+    fi
+
+    # Dead-PID detection: if the agent died without writing handoff, stop waiting
     if [ -n "$agent_pid" ] && ! kill -0 "$agent_pid" 2>/dev/null; then
+      # Agent is dead. Give it 5s grace for filesystem flush.
+      sleep 5
+      if [ -f "$handoff_file" ] && [ -s "$handoff_file" ]; then
+        return 0
+      fi
       log "    Agent PID $agent_pid died without writing handoff"
       return 1
     fi
+
     sleep 30
     elapsed=$((elapsed + 30))
+
     # Heartbeat every 5 minutes
     if (( elapsed % 300 == 0 )); then
-      log "    (waiting for handoff... ${elapsed}s elapsed)"
+      log "    (waiting for handoff... ${elapsed}s / ${timeout}s)"
     fi
   done
-  [ -f "$handoff_file" ]
+
+  # Final check after timeout
+  [ -f "$handoff_file" ] && [ -s "$handoff_file" ]
 }
 
 extract_pr_number() {
+  # Extract PR number — prefer gh CLI (authoritative), fall back to handoff grep.
   local worktree="$1"
-  local handoff="$2"
+  local handoff="${2:-}"
   local pr_num=""
-  # Prefer authoritative source: gh in the worktree
-  pr_num=$(cd "$worktree" && gh pr view --json number -q .number 2>/dev/null || echo "")
-  # Fallback: strict regex on handoff (only "PR #NNN" or "pull/NNN" patterns)
-  if [ -z "$pr_num" ] && [ -f "$handoff" ]; then
-    pr_num=$(grep -oP '(?:PR #|pull/)(\d+)' "$handoff" | grep -oP '\d+' | head -1 || true)
+
+  # Authoritative: ask gh for the PR on the current branch
+  pr_num=$(cd "$worktree" && gh pr view --json number -q .number 2>/dev/null) || true
+  if [ -n "$pr_num" ] && [ "$pr_num" != "null" ]; then
+    echo "$pr_num"
+    return 0
   fi
-  echo "$pr_num"
+
+  # Fallback: parse handoff for "PR #NNN" or "pull/NNN" or "number: NNN"
+  if [ -n "$handoff" ] && [ -f "$handoff" ]; then
+    pr_num=$(grep -oP '(?:PR\s*#|pull/|number:\s*)(\d+)' "$handoff" 2>/dev/null | grep -oP '\d+' | head -1) || true
+    if [ -n "$pr_num" ]; then
+      echo "$pr_num"
+      return 0
+    fi
+  fi
+
+  echo ""
+  return 1
 }
 
-check_existing_pr() {
-  local worktree="$1"
-  cd "$worktree" 2>/dev/null && gh pr view --json number -q .number 2>/dev/null || echo ""
+wait_for_ci() {
+  # Poll CI status until all checks complete or timeout.
+  local pr="$1"
+  local timeout="${2:-$TIMEOUT_CI}"
+  local elapsed=0
+
+  log "    Waiting for CI (max ${timeout}s)..."
+  while [ $elapsed -lt "$timeout" ]; do
+    local pending
+    pending=$(gh pr view "$pr" --json statusCheckRollup -q \
+      '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length' 2>/dev/null) || true
+
+    if [ "$pending" = "0" ]; then
+      # All completed — return count of failures
+      local failures
+      failures=$(gh pr view "$pr" --json statusCheckRollup -q \
+        '[.statusCheckRollup[] | select(.conclusion == "FAILURE")] | length' 2>/dev/null) || true
+      echo "${failures:-0}"
+      return 0
+    fi
+
+    sleep 30
+    elapsed=$((elapsed + 30))
+    if (( elapsed % 120 == 0 )); then
+      log "    CI: $pending checks still pending (${elapsed}s)"
+    fi
+  done
+
+  log "    CI timed out after ${timeout}s"
+  echo "timeout"
+  return 1
+}
+
+cleanup_worktree() {
+  local wt_path="$1"
+  if [ -d "$wt_path" ]; then
+    cd "$REPO" || return
+    git worktree remove "$wt_path" --force 2>/dev/null || rm -rf "$wt_path"
+    git worktree prune 2>/dev/null || true
+  fi
 }
 
 # ── Pipeline state ───────────────────────────────────────
@@ -132,12 +220,16 @@ ISSUES_SKIPPED=()
 ISSUES_REMAINING=("${ISSUES[@]}")
 
 write_status "running" "" "" "" "" ""
+log "Pipeline started: ${#ISSUES[@]} issues to process"
+log "Config: merge=$MERGE_STRATEGY, review_loops=$REVIEW_LOOP_COUNT, timeouts=impl:${TIMEOUT_IMPL}s/rev:${TIMEOUT_REVIEW}s/bot:${TIMEOUT_BOT}s/ci:${TIMEOUT_CI}s"
 
 # ── Main loop ────────────────────────────────────────────
 for i in "${!ISSUES[@]}"; do
   ISSUE="${ISSUES[$i]}"
   BRANCH="${BRANCHES[$i]}"
   WORKTREE="$WORKTREE_BASE/$BRANCH"
+  PR_NUM=""  # Reset for this iteration
+  SCOPE_WARNING=""
 
   # Remove from remaining
   ISSUES_REMAINING=("${ISSUES_REMAINING[@]:1}")
@@ -179,23 +271,25 @@ for i in "${!ISSUES[@]}"; do
   git fetch origin main --quiet
 
   if [ -d "$WORKTREE" ]; then
-    # Safety: check if a PR already exists for this branch
-    EXISTING_PR=$(check_existing_pr "$WORKTREE")
-    if [ -n "$EXISTING_PR" ]; then
-      log "  WARNING: PR #$EXISTING_PR already exists for branch $BRANCH. Skipping issue #$ISSUE."
+    # Check if a PR already exists for this branch (prior partial run)
+    EXISTING_PR=$(cd "$WORKTREE" && gh pr view --json number -q .number 2>/dev/null) || true
+    if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
+      log "  WARNING: PR #$EXISTING_PR already exists for branch $BRANCH. Skipping."
       ISSUES_SKIPPED+=("$ISSUE")
       continue
     fi
     cd "$WORKTREE"
-    git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" origin/main
+    git fetch origin main --quiet
     git reset --hard origin/main
   elif [ -x "$REPO/scripts/setup-worktree.sh" ]; then
     "$REPO/scripts/setup-worktree.sh" "$BRANCH" || {
       log "  setup-worktree.sh failed, creating manually"
+      git branch -D "$BRANCH" 2>/dev/null || true
       git worktree add "$WORKTREE" -b "$BRANCH" origin/main
       cd "$WORKTREE" && [ -f Makefile ] && make sync
     }
   else
+    git branch -D "$BRANCH" 2>/dev/null || true
     git worktree add "$WORKTREE" -b "$BRANCH" origin/main
     cd "$WORKTREE" && [ -f Makefile ] && make sync
   fi
@@ -204,11 +298,10 @@ for i in "${!ISSUES[@]}"; do
   log "  Worktree ready: $WORKTREE"
 
   # ── Phase 0: Scope Gate ────────────────────────────────
-  SCOPE_WARNING=""
   if [ "$SKIP_SCOPE_GATE" = "1" ]; then
     log "[0/5] Scope gate SKIPPED (SKIP_SCOPE_GATE=1)"
   elif echo ",$FORCE_ISSUES," | grep -q ",$ISSUE,"; then
-    log "[0/5] Scope gate BYPASSED (issue #$ISSUE in FORCE_ISSUES)"
+    log "[0/5] Scope gate BYPASSED (FORCE_ISSUES)"
   else
     PHASE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     write_status "running" "$ISSUE" "scope-gate" "" "" "$PHASE_START"
@@ -216,7 +309,7 @@ for i in "${!ISSUES[@]}"; do
     GATE_ID="gate-${ISSUE}-$(date +%s)"
     GATE_FILE="/tmp/${GATE_ID}-verdict.txt"
 
-  cat > "$LOG_DIR/${GATE_ID}-prompt.md" <<GATE_PROMPT
+    cat > "$LOG_DIR/${GATE_ID}-prompt.md" <<GATE_PROMPT
 You are evaluating whether GitHub issue #$ISSUE is appropriately scoped for a single
 implementation + review pipeline pass.
 
@@ -256,54 +349,47 @@ Write EXACTLY ONE LINE to $GATE_FILE:
 - "skip:<score>; <reason + split recommendation>" if score 8+
 - "blocker:<what prerequisite is missing>" if dependency=2
 
-Do not write anything else. Do not ask questions. Just score and write the verdict.
+Do not write anything else. Do not ask questions. Do not spawn another pi instance.
 GATE_PROMPT
 
-  cd "$WORKTREE"
-  nohup pi --approve \
-    --session-id "$GATE_ID" \
-    -p "@$LOG_DIR/${GATE_ID}-prompt.md" \
-    > "$LOG_DIR/${GATE_ID}.log" 2>&1 &
-  GATE_PID=$!
-  CHILD_PIDS+=("$GATE_PID")
+    cd "$WORKTREE"
+    nohup pi --approve \
+      --session-id "$GATE_ID" \
+      -p "@$LOG_DIR/${GATE_ID}-prompt.md" \
+      > "$LOG_DIR/${GATE_ID}.log" 2>&1 &
+    GATE_PID=$!
+    CHILD_PIDS+=("$GATE_PID")
 
-  # Short timeout — this is just reading an issue and writing one line
-  if ! wait_for_handoff "$GATE_FILE" 120 "$GATE_PID"; then
-    log "  Scope gate timed out (120s). Proceeding by default."
-    kill "$GATE_PID" 2>/dev/null || true
-    GATE_VERDICT="proceed"
-  else
-    GATE_VERDICT=$(cat "$GATE_FILE" 2>/dev/null | head -1 | tr -d '\n')
+    # Short timeout — this is just reading an issue and writing one line
+    if ! wait_for_handoff "$GATE_FILE" 120 "$GATE_PID"; then
+      log "  Scope gate timed out (120s). Proceeding by default."
+      kill "$GATE_PID" 2>/dev/null || true
+    else
+      GATE_VERDICT=$(head -1 "$GATE_FILE" 2>/dev/null | tr -d '\n')
+      case "$GATE_VERDICT" in
+        proceed)
+          log "  Scope gate: PROCEED"
+          ;;
+        proceed-with-warning:*)
+          SCOPE_WARNING="${GATE_VERDICT#proceed-with-warning:}"
+          log "  Scope gate: PROCEED WITH WARNING — $SCOPE_WARNING"
+          ;;
+        skip:*)
+          log "  Scope gate: SKIP — ${GATE_VERDICT#skip:}"
+          ISSUES_SKIPPED+=("$ISSUE")
+          continue
+          ;;
+        blocker:*)
+          log "  Scope gate: BLOCKER — ${GATE_VERDICT#blocker:}"
+          ISSUES_SKIPPED+=("$ISSUE")
+          continue
+          ;;
+        *)
+          log "  Scope gate: unexpected verdict '$GATE_VERDICT'. Proceeding."
+          ;;
+      esac
+    fi
   fi
-
-  case "$GATE_VERDICT" in
-    proceed)
-      log "  Scope gate: PROCEED"
-      ;;
-    proceed-with-warning:*)
-      GATE_REASON="${GATE_VERDICT#proceed-with-warning:}"
-      log "  Scope gate: PROCEED WITH WARNING — $GATE_REASON"
-      # Append focus reminder to implementation prompt later
-      SCOPE_WARNING="$GATE_REASON"
-      ;;
-    skip:*)
-      GATE_REASON="${GATE_VERDICT#skip:}"
-      log "  [SCOPE GATE] Issue #$ISSUE skipped — too broad for single pipeline pass."
-      log "  Reason: $GATE_REASON"
-      ISSUES_SKIPPED+=("$ISSUE")
-      continue
-      ;;
-    blocker:*)
-      GATE_REASON="${GATE_VERDICT#blocker:}"
-      log "  [SCOPE GATE] Issue #$ISSUE blocked — $GATE_REASON"
-      ISSUES_SKIPPED+=("$ISSUE")
-      continue
-      ;;
-    *)
-      log "  Scope gate returned unexpected verdict: '$GATE_VERDICT'. Proceeding by default."
-      ;;
-  esac
-  fi  # end SKIP_SCOPE_GATE check
 
   # ── Phase 2: Implementation ───────────────────────────
   PHASE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -334,6 +420,7 @@ Instructions:
 8. Write a handoff to $IMPL_HANDOFF with: PR number, head SHA, validation results, files changed
 
 Do NOT ask for clarification — implement based on the issue acceptance criteria.
+Do NOT spawn another pi instance.
 If the issue references prerequisites, confirm they are in main before starting.
 IMPL_PROMPT
 
@@ -351,7 +438,9 @@ IMPL_PROMPT
 
   if ! wait_for_handoff "$IMPL_HANDOFF" "$TIMEOUT_IMPL" "$IMPL_PID"; then
     log "  ERROR: Implementation timed out or agent died after ${TIMEOUT_IMPL}s"
-    kill "$IMPL_PID" 2>/dev/null || true
+    kill -TERM "$IMPL_PID" 2>/dev/null || true
+    sleep 3
+    kill -9 "$IMPL_PID" 2>/dev/null || true
     log "  Skipping issue #$ISSUE"
     ISSUES_SKIPPED+=("$ISSUE")
     continue
@@ -365,16 +454,12 @@ IMPL_PROMPT
     continue
   fi
   log "  PR #$PR_NUM opened"
-
-  # Phase transition judgment: check if make check passed in handoff
-  if grep -qi "make check.*fail\|validation.*fail\|FAILED" "$IMPL_HANDOFF" 2>/dev/null; then
-    log "  WARNING: Implementation handoff suggests make check may have failed. Proceeding with review (it may catch the issue)."
-  fi
+  write_status "running" "$ISSUE" "implementation-done" "$IMPL_PID" "$PR_NUM" "$PHASE_START"
 
   # Check control between phases
   CTRL=$(check_control)
   if [ "$CTRL" = "skip" ]; then
-    log "  SKIP command received after implementation. Issue #$ISSUE skipped (PR #$PR_NUM open but not merged)."
+    log "  SKIP received after implementation. PR #$PR_NUM open but not merged."
     ISSUES_SKIPPED+=("$ISSUE")
     continue
   fi
@@ -401,6 +486,8 @@ Instructions:
 3. Run \`make check\` after fixes
 4. Commit and push fixes
 5. Write handoff to $REV_HANDOFF with: findings, fixes, head SHA, validation result
+
+Do NOT spawn another pi instance.
 REV_PROMPT
 
     cd "$WORKTREE"
@@ -416,23 +503,19 @@ REV_PROMPT
     log "  Agent PID: $REV_PID (session: $REV_ID)"
 
     if ! wait_for_handoff "$REV_HANDOFF" "$TIMEOUT_REVIEW" "$REV_PID"; then
-      log "  WARNING: Self-review timed out. Continuing."
-      kill "$REV_PID" 2>/dev/null || true
+      log "  WARNING: Self-review timed out or agent died. Continuing."
+      kill -TERM "$REV_PID" 2>/dev/null || true
+      sleep 3
+      kill -9 "$REV_PID" 2>/dev/null || true
     else
       log "  Self-review complete"
-    fi
-
-    # Phase transition: if self-review pushed, wait for CI
-    if [ -f "$REV_HANDOFF" ] && grep -qi "push\|commit" "$REV_HANDOFF" 2>/dev/null; then
-      log "  Self-review pushed commits. Waiting 15s for CI to start."
-      sleep 15
     fi
   fi
 
   # Check control between phases
   CTRL=$(check_control)
   if [ "$CTRL" = "skip" ]; then
-    log "  SKIP command received after review. Issue #$ISSUE skipped."
+    log "  SKIP received after review. PR #$PR_NUM open but not merged."
     ISSUES_SKIPPED+=("$ISSUE")
     continue
   fi
@@ -443,12 +526,12 @@ REV_PROMPT
   else
     PHASE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     write_status "running" "$ISSUE" "bot-review" "" "$PR_NUM" "$PHASE_START"
-    log "[4/5] Bot review loop ($REVIEW_LOOP_COUNT rounds)"
+    log "[4/5] Bot review loop ($REVIEW_LOOP_COUNT rounds max)"
     BOT_ID="ghe-pr-review-loop-${PR_NUM}-$(date +%s)"
     BOT_HANDOFF="/tmp/${BOT_ID}-handoff.md"
 
     # Minimal activation prompt — the ghe-pr-review-loop skill owns its own
-    # worker contract. We pass only variable inputs.
+    # worker contract. We pass only the variable inputs it needs.
     cat > "/tmp/${BOT_ID}-prompt.md" <<BOT_PROMPT
 /skill:ghe-pr-review-loop worker mode
 
@@ -479,13 +562,15 @@ BOT_PROMPT
     log "  Agent PID: $BOT_PID (session: $BOT_ID)"
 
     if ! wait_for_handoff "$BOT_HANDOFF" "$TIMEOUT_BOT" "$BOT_PID"; then
-      log "  WARNING: Bot review timed out. Attempting merge."
-      kill "$BOT_PID" 2>/dev/null || true
+      log "  WARNING: Bot review timed out or agent died. Attempting merge."
+      kill -TERM "$BOT_PID" 2>/dev/null || true
+      sleep 3
+      kill -9 "$BOT_PID" 2>/dev/null || true
     else
       log "  Bot review complete"
-      # Phase transition: check if bot handoff says CI failed
+      # If handoff reports CI failure, don't merge
       if grep -qi "CI.*fail\|CI.*red\|blocker" "$BOT_HANDOFF" 2>/dev/null; then
-        log "  WARNING: Bot handoff indicates CI failure. Skipping merge."
+        log "  WARNING: Bot handoff indicates CI failure or blocker. Skipping merge."
         ISSUES_SKIPPED+=("$ISSUE")
         continue
       fi
@@ -494,8 +579,7 @@ BOT_PROMPT
 
   # ── Phase 5: Merge ────────────────────────────────────
   if [ "$NO_MERGE" = "1" ]; then
-    log "[5/5] Merge SKIPPED (NO_MERGE=1)"
-    log "  Issue #$ISSUE pipeline complete (no merge). PR #$PR_NUM ready for manual merge."
+    log "[5/5] Merge SKIPPED (NO_MERGE=1). PR #$PR_NUM ready for manual merge."
     ISSUES_COMPLETED+=("$ISSUE")
     continue
   fi
@@ -503,29 +587,37 @@ BOT_PROMPT
   PHASE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   write_status "running" "$ISSUE" "merging" "" "$PR_NUM" "$PHASE_START"
   log "[5/5] Merging PR #$PR_NUM"
-  cd "$WORKTREE"
+  cd "$REPO"
 
-  # Wait for CI to fully settle
-  sleep 15
-
-  CI_FAILURES=$(gh pr view "$PR_NUM" --json statusCheckRollup -q \
-    '[.statusCheckRollup[] | select(.status != "COMPLETED" or .conclusion == "FAILURE")] | length' 2>/dev/null || echo "999")
+  # Poll CI until complete (not just a fixed sleep)
+  CI_FAILURES=$(wait_for_ci "$PR_NUM" "$TIMEOUT_CI")
 
   if [ "$CI_FAILURES" = "0" ]; then
-    if gh pr merge "$PR_NUM" --$MERGE_STRATEGY --delete-branch --admin 2>/dev/null; then
-      log "  Merged via gh pr merge"
+    # Remove worktree BEFORE merge so --delete-branch doesn't fail on local ref
+    cleanup_worktree "$WORKTREE"
+
+    if gh pr merge "$PR_NUM" --"$MERGE_STRATEGY" --delete-branch --admin 2>/dev/null; then
+      log "  Merged via gh CLI"
     elif gh api "repos/$OWNER_REPO/pulls/$PR_NUM/merge" -X PUT \
         -f merge_method="$MERGE_STRATEGY" \
-        -f commit_title="$(gh pr view $PR_NUM --json title -q .title)" 2>/dev/null; then
+        -f commit_title="$(gh pr view "$PR_NUM" --json title -q .title) (#$PR_NUM)" 2>/dev/null; then
       log "  Merged via API"
+      # Clean up remote branch
+      gh api "repos/$OWNER_REPO/git/refs/heads/$BRANCH" -X DELETE 2>/dev/null || true
     else
-      log "  ERROR: Merge failed for PR #$PR_NUM. Continuing."
+      log "  ERROR: Merge failed for PR #$PR_NUM. Skipping."
       ISSUES_SKIPPED+=("$ISSUE")
       continue
     fi
-  else
-    log "  ERROR: CI not green ($CI_FAILURES checks incomplete/failed). Skipping merge."
+  elif [ "$CI_FAILURES" = "timeout" ]; then
+    log "  ERROR: CI timed out after ${TIMEOUT_CI}s. Skipping merge."
     ISSUES_SKIPPED+=("$ISSUE")
+    cleanup_worktree "$WORKTREE"
+    continue
+  else
+    log "  ERROR: CI has $CI_FAILURES failing checks. Skipping merge."
+    ISSUES_SKIPPED+=("$ISSUE")
+    cleanup_worktree "$WORKTREE"
     continue
   fi
 
@@ -535,12 +627,15 @@ BOT_PROMPT
   git pull origin main --ff-only 2>/dev/null || true
   ISSUES_COMPLETED+=("$ISSUE")
   log "  Issue #$ISSUE done ✓ (PR #$PR_NUM merged)"
-  echo ""
+  log ""
+
+  # Brief pause between issues
   sleep 10
 done
 
+# ── Clean exit ───────────────────────────────────────────
 # Disarm trap for clean exit
-trap - EXIT INT TERM
+trap - INT TERM
 
 write_status "completed" "" "" "" "" ""
 
