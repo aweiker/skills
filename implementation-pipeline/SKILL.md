@@ -184,14 +184,19 @@ Auto-detect or ask the user:
 | `ISSUES` | User provides list | Ask |
 | `REPO` | `git rev-parse --show-toplevel` from cwd | Ask |
 | `OWNER_REPO` | Parse from `git remote get-url origin` | Ask |
-| `GHE_API` | Derive from remote URL + `/api/v3` | Ask |
+| `AI_REVIEW_PROVIDER` | `coderabbit` for public GitHub CodeRabbit, `ghe-pr-bot` for Enterprise Hyperspace/PR-Bot | Infer/ask |
+| `AI_REVIEW_API_BASE` | `https://api.github.com` for CodeRabbit; Enterprise `/api/v3` for GHE | Infer/ask |
 | `WORKTREE_BASE` | Repository AGENTS.md convention or `~/worktrees/<repo-name>` | Derive |
+| `BASE_BRANCH` | Default branch from `origin/HEAD`; set explicitly for `master` repos | Derive |
 | `BRANCH_PREFIX` | `issue-<number>-<slugified-title>` | Auto-generate |
 | `REVIEW_LOOP_COUNT` | Default 5, user can override | 5 |
 | `MERGE_STRATEGY` | `squash` (default), `merge`, `rebase` | `squash` |
 | `TIMEOUT_IMPL` | Max time for implementation phase (seconds) | 2400 (40 min) |
 | `TIMEOUT_REVIEW` | Max time for self-review phase (seconds) | 1200 (20 min) |
 | `TIMEOUT_BOT` | Max time for bot review loop (seconds) | 2400 (40 min) |
+
+`GHE_API` is deprecated as a config field. `pipeline.sh` still accepts it as a fallback for older
+configs, but new configs must set `AI_REVIEW_PROVIDER` and `AI_REVIEW_API_BASE`.
 
 ### 2. Generate the config file and launch
 
@@ -273,7 +278,7 @@ tmux:
 1. Setup worktree
 2. Spawn design-first implementation agent, wait for handoff
 3. Spawn targeted-pr-review agent, wait for handoff
-4. Spawn ghe-pr-review-loop worker agent, wait for handoff
+4. Spawn ai-pr-review-loop worker agent with the selected provider, wait for handoff
 5. Merge if CI green
 6. Write handoff
 
@@ -296,12 +301,13 @@ Before starting the next phase, ask:
 | 1. Worktree | — | `setup-worktree.sh` or manual; skip if PR exists | Clean working tree |
 | 2. Implementation | `design-first-implementation` | Issue #, worktree, branch, scope warning | PR number, head SHA, `make check` result |
 | 3. Self-review | `targeted-pr-review` | PR #, worktree | Findings count, fixes, head SHA |
-| 4. Bot review | `ghe-pr-review-loop` (worker mode) | Minimal inputs only — skill owns its prompt | CI state, findings, head SHA |
+| 4. Bot review | `ai-pr-review-loop` (worker mode) | Minimal inputs only — provider model owns bot semantics | CI state, findings, head SHA |
 | 5. Merge | — | CI green via `statusCheckRollup` | N/A (pipeline handles directly) |
 
-**Phase 4 critical rule**: Pass only variable inputs (WORKTREE, PR, OWNER_REPO, GHE_API,
-SESSION_ID, LOG, HANDOFF). The ghe-pr-review-loop skill owns its own worker contract — do NOT
-paste the full requirements list. A minimal activation prompt is sufficient.
+**Phase 4 critical rule**: Pass only variable inputs (WORKTREE, PR, OWNER_REPO,
+AI_REVIEW_PROVIDER, AI_REVIEW_API_BASE, SESSION_ID, LOG, HANDOFF). The `ai-pr-review-loop` skill
+owns its own worker contract and provider-specific behavior — do NOT paste the full requirements
+list. A minimal activation prompt is sufficient.
 
 **Phase 5 fallback**: If `gh pr merge` fails, the script falls back to the API merge endpoint
 automatically. It polls CI with a timeout loop (not a fixed sleep). It removes the worktree
@@ -353,7 +359,7 @@ The pipeline is designed to be extended:
 | Pipeline stuck (no log progress 10+ min) | `ps aux \| grep pi` — is the child alive? | Kill stale PID, check `$LOG_DIR/<session>.log` |
 | "Could not determine PR number" | Agent log for impl phase — did it push? | Check `git log --oneline -3` in worktree |
 | Merge fails with "not mergeable" | PR has conflicts with main | Rebase in worktree, push, retry merge |
-| Bot review loops without stopping | `/tmp/<bot-session>-progress.log` | Kill bot PID; quality gate may need manual triage |
+| Bot review loops without stopping | `/tmp/ai-pr-review-loop-*-progress.log` | Kill bot PID; quality gate may need manual triage |
 | "CI not green" but checks look fine | GH API lag in `statusCheckRollup` | Wait 30s, retry: `gh pr view <PR> --json statusCheckRollup` |
 | Agent writes handoff but no PR number in it | Agent succeeded but used freeform format | `gh pr view` in worktree is the authoritative fallback |
 | Pipeline crashed, orphan agents running | `pgrep -af "impl-pipeline"` | See "Cleaning Up" in `references/monitoring-and-steering.md` |

@@ -190,7 +190,7 @@ After a pipeline crashes, is killed, or leaves issues in a bad state, clean up i
 
 ```bash
 # Find any pi processes from this pipeline
-pgrep -af "impl-pipeline|impl-[0-9]|review-[0-9]|ghe-pr-review-loop" | grep -v grep
+pgrep -af "impl-pipeline|impl-[0-9]|review-[0-9]|ai-pr-review-loop|ghe-pr-review-loop" | grep -v grep
 
 # Kill them all
 pkill -f "impl-pipeline-<TIMESTAMP>" 2>/dev/null || true
@@ -257,6 +257,8 @@ rm -rf "$LOG_DIR"
 # Remove handoff and prompt files
 rm -f /tmp/impl-*-handoff.md /tmp/impl-*-prompt.md
 rm -f /tmp/review-*-handoff.md /tmp/review-*-prompt.md
+rm -f /tmp/ai-pr-review-loop-*-handoff.md /tmp/ai-pr-review-loop-*-prompt.md
+rm -f /tmp/ai-pr-review-loop-*-progress.log /tmp/ai-pr-review-loop-*.log
 rm -f /tmp/ghe-pr-review-loop-*-handoff.md /tmp/ghe-pr-review-loop-*-prompt.md
 rm -f /tmp/ghe-pr-review-loop-*-progress.log /tmp/ghe-pr-review-loop-*.log
 ```
@@ -319,7 +321,7 @@ git push --force-with-lease
 ```
 Then manually merge or re-run the pipeline for that single issue.
 
-### Bot never responds to /review comment
+### Bot never responds to review trigger comment
 
 If the review bot is down, misconfigured, or rate-limited, the bot-review phase will wait
 for its full timeout (default 40 min) without any findings appearing.

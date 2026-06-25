@@ -26,7 +26,7 @@ calibrating expected behavior and debugging when output diverges from the patter
 [2026-06-25T01:18:42Z]   Agent PID: 3145201 (session: review-273-1782350322)
 [2026-06-25T01:28:15Z]   Self-review complete
 [2026-06-25T01:28:30Z] [4/5] Bot review loop (5 rounds)
-[2026-06-25T01:28:30Z]   Agent PID: 3152088 (session: ghe-pr-review-loop-280-1782350910)
+[2026-06-25T01:28:30Z]   Agent PID: 3152088 (session: ai-pr-review-loop-ghe-pr-bot-280-1782350910)
 [2026-06-25T01:35:44Z]   Bot review complete
 [2026-06-25T01:35:44Z] [5/5] Merging PR #280
 [2026-06-25T01:36:01Z]   Merged via gh pr merge
@@ -45,7 +45,7 @@ calibrating expected behavior and debugging when output diverges from the patter
 [2026-06-25T02:05:33Z]   Agent PID: 3178902 (session: review-274-1782353133)
 [2026-06-25T02:15:11Z]   Self-review complete
 [2026-06-25T02:15:26Z] [4/5] Bot review loop (5 rounds)
-[2026-06-25T02:15:26Z]   Agent PID: 3185776 (session: ghe-pr-review-loop-281-1782353726)
+[2026-06-25T02:15:26Z]   Agent PID: 3185776 (session: ai-pr-review-loop-ghe-pr-bot-281-1782353726)
 [2026-06-25T02:28:09Z]   Bot review complete
 [2026-06-25T02:28:09Z] [5/5] Merging PR #281
 [2026-06-25T02:28:22Z]   Merged via gh pr merge

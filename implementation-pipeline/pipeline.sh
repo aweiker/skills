@@ -5,7 +5,7 @@
 # Usage: pipeline.sh <config-file>
 #
 # The config file is a shell-sourceable file that defines:
-#   REPO, WORKTREE_BASE, OWNER_REPO, GHE_API, MERGE_STRATEGY,
+#   REPO, WORKTREE_BASE, OWNER_REPO, AI_REVIEW_PROVIDER, AI_REVIEW_API_BASE, BASE_BRANCH, MERGE_STRATEGY,
 #   REVIEW_LOOP_COUNT, TIMEOUT_IMPL, TIMEOUT_REVIEW, TIMEOUT_BOT, TIMEOUT_CI,
 #   ISSUES (array), BRANCHES (array)
 #
@@ -31,11 +31,13 @@ The config file must define:
   REPO             — path to canonical repo checkout
   WORKTREE_BASE    — base path for worktrees
   OWNER_REPO       — GitHub owner/repo (e.g. "org/repo-name")
-  GHE_API          — GitHub API base URL
+  AI_REVIEW_PROVIDER  — ai-pr-review-loop provider (coderabbit or ghe-pr-bot)
+  AI_REVIEW_API_BASE  — GitHub API base URL for the provider
   ISSUES           — bash array of issue numbers
   BRANCHES         — bash array of branch names (same length as ISSUES)
 
 Optional (have defaults):
+  BASE_BRANCH          — base branch (auto-detected if unset)
   MERGE_STRATEGY       — squash (default), merge, rebase
   REVIEW_LOOP_COUNT    — max bot review rounds (default: 5)
   TIMEOUT_IMPL         — implementation timeout in seconds (default: 2400)
@@ -51,7 +53,8 @@ Optional (have defaults):
   LOG_DIR              — override log directory (default: /tmp/impl-pipeline-<timestamp>)
   IMPL_SKILL           — skill path for implementation (default: design-first-implementation)
   REVIEW_SKILL         — skill path for self-review (default: targeted-pr-review)
-  BOT_SKILL            — skill path for bot review (default: ghe-pr-review-loop)
+  BOT_SKILL            — skill path for bot review (default: ai-pr-review-loop)
+  GHE_API              — deprecated fallback for AI_REVIEW_API_BASE
   EXTRA_IMPL_CONTEXT   — extra text appended to implementation prompt
 EOF
   exit 1
@@ -61,7 +64,7 @@ validate_config() {
   local errors=0
 
   # Required fields
-  for var in REPO WORKTREE_BASE OWNER_REPO GHE_API; do
+  for var in REPO WORKTREE_BASE OWNER_REPO AI_REVIEW_PROVIDER AI_REVIEW_API_BASE; do
     if [ -z "${!var:-}" ]; then
       echo "ERROR: Required config variable $var is not set." >&2
       errors=$((errors + 1))
@@ -92,6 +95,12 @@ validate_config() {
   case "${MERGE_STRATEGY:-squash}" in
     squash|merge|rebase) ;;
     *) echo "ERROR: MERGE_STRATEGY must be squash, merge, or rebase (got: $MERGE_STRATEGY)" >&2; errors=$((errors + 1)) ;;
+  esac
+
+  # AI_REVIEW_PROVIDER must be valid
+  case "${AI_REVIEW_PROVIDER:-}" in
+    coderabbit|ghe-pr-bot) ;;
+    *) echo "ERROR: AI_REVIEW_PROVIDER must be coderabbit or ghe-pr-bot (got: ${AI_REVIEW_PROVIDER:-})" >&2; errors=$((errors + 1)) ;;
   esac
 
   # Timeouts must be positive integers
@@ -141,6 +150,11 @@ BRANCHES=()
 source "$CONFIG_FILE"
 
 # Apply defaults for optional fields
+BASE_BRANCH="${BASE_BRANCH:-}"
+if [ -z "$BASE_BRANCH" ]; then
+  BASE_BRANCH=$(git -C "$REPO" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
+fi
+BASE_BRANCH="${BASE_BRANCH:-main}"
 MERGE_STRATEGY="${MERGE_STRATEGY:-squash}"
 REVIEW_LOOP_COUNT="${REVIEW_LOOP_COUNT:-5}"
 TIMEOUT_IMPL="${TIMEOUT_IMPL:-2400}"
@@ -155,7 +169,20 @@ FORCE_ISSUES="${FORCE_ISSUES:-}"
 NO_MERGE="${NO_MERGE:-0}"
 IMPL_SKILL="${IMPL_SKILL:-design-first-implementation}"
 REVIEW_SKILL="${REVIEW_SKILL:-targeted-pr-review}"
-BOT_SKILL="${BOT_SKILL:-ghe-pr-review-loop}"
+AI_REVIEW_PROVIDER="${AI_REVIEW_PROVIDER:-ghe-pr-bot}"
+AI_REVIEW_API_BASE="${AI_REVIEW_API_BASE:-${GHE_API:-}}"
+case "$AI_REVIEW_PROVIDER" in
+  coderabbit)
+    AI_REVIEW_API_BASE="${AI_REVIEW_API_BASE:-https://api.github.com}"
+    ;;
+  ghe-pr-bot)
+    AI_REVIEW_API_BASE="${AI_REVIEW_API_BASE:-https://github.concur.com/api/v3}"
+    ;;
+  *)
+    :
+    ;;
+esac
+BOT_SKILL="${BOT_SKILL:-ai-pr-review-loop}"
 EXTRA_IMPL_CONTEXT="${EXTRA_IMPL_CONTEXT:-}"
 
 # Resolve skill paths: if not absolute, look in the skill directory's parent
@@ -329,16 +356,16 @@ wait_for_ci() {
   local timeout="${2:-$TIMEOUT_CI}"
   local elapsed=0
 
-  log "    Polling CI (max ${timeout}s)..."
+  log "    Polling CI (max ${timeout}s)..." >&2
   while [ $elapsed -lt "$timeout" ]; do
     local pending
     pending=$(gh pr view "$pr" --json statusCheckRollup -q \
-      '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length' 2>/dev/null) || true
+      '[.statusCheckRollup[] | select((.status != null and .status != "COMPLETED") or (.state != null and (.state == "PENDING" or .state == "EXPECTED"))) ] | length' 2>/dev/null) || true
 
     if [ "${pending:-999}" = "0" ]; then
       local failures
       failures=$(gh pr view "$pr" --json statusCheckRollup -q \
-        '[.statusCheckRollup[] | select(.conclusion == "FAILURE")] | length' 2>/dev/null) || true
+        '[.statusCheckRollup[] | select((.conclusion != null and (.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == "ACTION_REQUIRED")) or (.state != null and (.state == "FAILURE" or .state == "ERROR"))) ] | length' 2>/dev/null) || true
       echo "${failures:-0}"
       return 0
     fi
@@ -346,11 +373,11 @@ wait_for_ci() {
     sleep 30
     elapsed=$((elapsed + 30))
     if (( elapsed % 120 == 0 )); then
-      log "    CI: ${pending:-?} checks pending (${elapsed}s)"
+      log "    CI: ${pending:-?} checks pending (${elapsed}s)" >&2
     fi
   done
 
-  log "    CI timed out after ${timeout}s"
+  log "    CI timed out after ${timeout}s" >&2
   echo "timeout"
   return 1
 }
@@ -382,7 +409,7 @@ Score using the Reviewability Risk Score (0-14):
 Boundary clarity (0-4): subsystems touched, existing-vs-new code, contract boundaries.
 Scope firmness (0-4): acceptance criteria count/quality, stopping point clarity, adjacent temptation.
 Review difficulty (0-4): diff size estimate, behavioral change count, domain knowledge needed.
-Dependency risk (0-2): prerequisites in main, test isolation.
+Dependency risk (0-2): prerequisites in $BASE_BRANCH, test isolation.
 
 Thresholds: 0-4=proceed, 5-7=proceed-with-warning, 8+=skip, dependency=2=blocker.
 
@@ -421,12 +448,12 @@ generate_impl_prompt() {
   echo "4. Run make check (or the repo equivalent validation) and ensure it passes"
   echo "5. Commit all changes with a descriptive message referencing #${issue}"
   echo "6. Push the branch to origin"
-  echo "7. Open a PR targeting main with title and body referencing #${issue}"
+  echo "7. Open a PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
   echo "8. Write a handoff to ${handoff} with: PR number, head SHA, validation results, files changed"
   echo ""
   echo "Do NOT ask for clarification - implement based on the issue acceptance criteria."
   echo "Do NOT spawn another pi instance."
-  echo "If the issue references prerequisites, confirm they are in main before starting."
+  echo "If the issue references prerequisites, confirm they are in ${BASE_BRANCH} before starting."
 
   if [ -n "${EXTRA_IMPL_CONTEXT:-}" ]; then
     echo ""
@@ -456,17 +483,20 @@ EOF
 generate_bot_prompt() {
   local pr="$1" worktree="$2" session_id="$3" handoff="$4"
   cat <<EOF
-/skill:ghe-pr-review-loop worker mode
+/skill:ai-pr-review-loop worker mode
 
 You are the worker pi instance. Do not spawn another pi instance.
 
-Task: run $REVIEW_LOOP_COUNT preflight-first GitHub Enterprise PR review loop(s) for PR #$pr and address actionable items.
+Provider: $AI_REVIEW_PROVIDER
+
+Task: run $REVIEW_LOOP_COUNT preflight-first AI PR review loop(s) for PR #$pr and address actionable items.
 
 Inputs:
 - WORKTREE: $worktree
 - PR: $pr
 - OWNER_REPO: $OWNER_REPO
-- GHE_API: $GHE_API
+- PROVIDER: $AI_REVIEW_PROVIDER
+- API_BASE: $AI_REVIEW_API_BASE
 - SESSION_ID: $session_id
 - LOG: $LOG_DIR/${session_id}.log
 - HANDOFF: $handoff
@@ -546,7 +576,7 @@ for i in "${!ISSUES[@]}"; do
   write_status "running"
   log "[1/5] Worktree setup"
   cd "$REPO" || continue
-  git fetch origin main --quiet
+  git fetch origin "$BASE_BRANCH" --quiet
 
   if [ -d "$WORKTREE" ]; then
     # Check for existing PR (don't destroy in-progress work)
@@ -557,18 +587,18 @@ for i in "${!ISSUES[@]}"; do
       continue
     fi
     cd "$WORKTREE" || continue
-    git fetch origin main --quiet
-    git reset --hard origin/main
+    git fetch origin "$BASE_BRANCH" --quiet
+    git reset --hard "origin/$BASE_BRANCH"
   elif [ -x "$REPO/scripts/setup-worktree.sh" ]; then
     "$REPO/scripts/setup-worktree.sh" "$BRANCH" || {
       log "  setup-worktree.sh failed, creating manually"
       git branch -D "$BRANCH" 2>/dev/null || true
-      git worktree add "$WORKTREE" -b "$BRANCH" origin/main
+      git worktree add "$WORKTREE" -b "$BRANCH" "origin/$BASE_BRANCH"
       cd "$WORKTREE" && [ -f Makefile ] && make sync
     }
   else
     git branch -D "$BRANCH" 2>/dev/null || true
-    git worktree add "$WORKTREE" -b "$BRANCH" origin/main
+    git worktree add "$WORKTREE" -b "$BRANCH" "origin/$BASE_BRANCH"
     cd "$WORKTREE" && [ -f Makefile ] && make sync
   fi
 
@@ -722,8 +752,8 @@ for i in "${!ISSUES[@]}"; do
   else
     CURRENT_PHASE="bot-review"
     write_status "running"
-    log "[4/5] Bot review (max $REVIEW_LOOP_COUNT rounds)"
-    BOT_ID="bot-review-${CURRENT_PR}-$(date +%s)"
+    log "[4/5] Bot review via $AI_REVIEW_PROVIDER (max $REVIEW_LOOP_COUNT rounds)"
+    BOT_ID="ai-pr-review-loop-${AI_REVIEW_PROVIDER}-${CURRENT_PR}-$(date +%s)"
     BOT_HANDOFF="/tmp/${BOT_ID}-handoff.md"
     BOT_PROMPT_FILE="$LOG_DIR/${BOT_ID}-prompt.md"
 
@@ -746,8 +776,9 @@ for i in "${!ISSUES[@]}"; do
       kill_agent "$BOT_PID"
     else
       log "  Done"
-      # Check for CI failure in handoff
-      if grep -qi "CI.*fail\|CI.*red\|blocker" "$BOT_HANDOFF" 2>/dev/null; then
+      # Check for explicit bot-review blockers. Do not treat "Still blocked: none" as a blocker.
+      if grep -Eiq "CI:.*(fail|red)|Exit reason:.*blocker" "$BOT_HANDOFF" 2>/dev/null || \
+        (grep -Eiq "Still blocked:" "$BOT_HANDOFF" 2>/dev/null && ! grep -Eiq "Still blocked:[[:space:]]*(none|$)" "$BOT_HANDOFF" 2>/dev/null); then
         log "  Bot reports CI failure/blocker. Skipping merge."
         ISSUES_SKIPPED+=("$ISSUE")
         continue
@@ -798,10 +829,10 @@ for i in "${!ISSUES[@]}"; do
     continue
   fi
 
-  # Pull main for next issue
+  # Pull base branch for next issue
   cd "$REPO" || continue
-  git fetch origin main --quiet
-  git pull origin main --ff-only 2>/dev/null || true
+  git fetch origin "$BASE_BRANCH" --quiet
+  git pull origin "$BASE_BRANCH" --ff-only 2>/dev/null || true
   ISSUES_COMPLETED+=("$ISSUE")
   CURRENT_PHASE=""
   log "  Issue #$ISSUE done ✓"

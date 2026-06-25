@@ -14,7 +14,9 @@ A shell-sourceable file. All pipeline behavior is determined by these values.
 REPO="/home/ubuntu/repos/dynatrace-service-aggregator"
 WORKTREE_BASE="/home/ubuntu/worktrees/service-intelligence-platform"
 OWNER_REPO="strat/dynatrace-service-aggregator"
-GHE_API="https://github.concur.com/api/v3"
+AI_REVIEW_PROVIDER="ghe-pr-bot"                 # or "coderabbit"
+AI_REVIEW_API_BASE="https://github.concur.com/api/v3" # coderabbit: https://api.github.com
+BASE_BRANCH="main"                            # e.g. "master" for older repos
 ISSUES=(274 275 276 277)
 BRANCHES=(
   "issue-274-problems-detail-page"
@@ -39,9 +41,12 @@ NO_MERGE=0
 LOG_DIR=""             # auto-generated if empty
 IMPL_SKILL="design-first-implementation"
 REVIEW_SKILL="targeted-pr-review"
-BOT_SKILL="ghe-pr-review-loop"
+BOT_SKILL="ai-pr-review-loop"
 EXTRA_IMPL_CONTEXT=""  # appended to implementation prompt
 ```
+
+`GHE_API` is still accepted as a deprecated fallback for `AI_REVIEW_API_BASE`, but new configs
+should use the provider-neutral field.
 
 ## How to derive values
 
@@ -50,7 +55,10 @@ EXTRA_IMPL_CONTEXT=""  # appended to implementation prompt
 | `REPO` | `git rev-parse --show-toplevel` from user's cwd |
 | `WORKTREE_BASE` | Repository AGENTS.md convention, or `~/worktrees/<repo-name>` |
 | `OWNER_REPO` | Parse from `git remote get-url origin` — strip protocol/host/.git |
-| `GHE_API` | Derive from remote host + `/api/v3` |
+| `AI_REVIEW_PROVIDER` | `coderabbit` for public GitHub CodeRabbit; `ghe-pr-bot` for Enterprise Hyperspace/PR-Bot |
+| `AI_REVIEW_API_BASE` | `https://api.github.com` for CodeRabbit; Enterprise host + `/api/v3` for GHE |
+| `GHE_API` | Deprecated fallback for `AI_REVIEW_API_BASE`; do not use in new configs |
+| `BASE_BRANCH` | `origin/HEAD` default branch; set explicitly when repo uses `master` |
 | `ISSUES` | User provides |
 | `BRANCHES` | Auto-generate: `issue-<N>-<slugified-title>` from `gh issue view <N>` |
 | `MERGE_STRATEGY` | User preference or repo convention (default: squash) |

@@ -59,7 +59,7 @@ frontend/src/pages/. The backend API is already complete.
 Run the implementation pipeline for #10, #11, #12 but skip the bot review loop.
 ```
 
-(Sets `SKIP_BOT=1` — useful for repos on public GitHub without a GHE PR-Bot.)
+(Sets `SKIP_BOT=1` — useful for repos without CodeRabbit, GHE PR-Bot, or another configured AI reviewer.)
 
 ## Cancellation
 
