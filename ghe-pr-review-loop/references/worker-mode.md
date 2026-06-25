@@ -104,8 +104,9 @@ re-triggering.
 
 2. If the round's average quality is ≤ 0.5 (mix of low-value findings): reply to false
    positives/out-of-scope with rebuttals, but DO NOT fix the 0.7-quality cleanup items.
-   Append the round score, write HANDOFF, and **stop**. Flag the unfixed cleanup items in
-   HANDOFF as "deferred cleanup" for human decision.
+   Append the round score, write HANDOFF, and **stop**. For each unfixed finding scored ≥ 0.7,
+   create a GitHub issue (`gh issue create`) and include the issue URL in the HANDOFF and in
+   the inline reply. Never write "deferred" or "follow-up" without a created issue URL.
 
 3. If the round's average quality is > 0.5: proceed to fix actionable findings normally.
 
@@ -410,21 +411,25 @@ QUALITY_LOG="/tmp/${SESSION_ID:-ghe-pr-review-loop}-quality.jsonl"
 # NOTE: Do NOT clear REPLIED_LOG between rounds. Once a comment has been replied to, it must
 # never receive a second reply regardless of which round re-encounters it.
 # After scoring each comment, append one line:
-#   Verified actionable defect (fixed):
-#     echo '{"id":<COMMENT_ID>,"quality":1.0,"scope_creep":false}' >> "$QUALITY_LOG"
+#   Verified actionable defect (fixed, exceptional/subtle catch):
+#     echo '{"id":<COMMENT_ID>,"quality":1.0,"scope_creep":false,"awesome":true}' >> "$QUALITY_LOG"
+#   Verified actionable defect (fixed, standard):
+#     echo '{"id":<COMMENT_ID>,"quality":1.0,"scope_creep":false,"awesome":false}' >> "$QUALITY_LOG"
 #   Verified actionable cleanup (fixed):
-#     echo '{"id":<COMMENT_ID>,"quality":0.7,"scope_creep":false}' >> "$QUALITY_LOG"
+#     echo '{"id":<COMMENT_ID>,"quality":0.7,"scope_creep":false,"awesome":false}' >> "$QUALITY_LOG"
 #   Out of scope (real finding, wrong PR):
-#     echo '{"id":<COMMENT_ID>,"quality":0.3,"scope_creep":<true|false>}' >> "$QUALITY_LOG"
+#     echo '{"id":<COMMENT_ID>,"quality":0.3,"scope_creep":<true|false>,"awesome":false}' >> "$QUALITY_LOG"
 #   False positive / unverified / contradicted:
-#     echo '{"id":<COMMENT_ID>,"quality":0.0,"scope_creep":false}' >> "$QUALITY_LOG"
+#     echo '{"id":<COMMENT_ID>,"quality":0.0,"scope_creep":false,"awesome":false}' >> "$QUALITY_LOG"
 ```
 
 **Scope creep flag**: set `scope_creep: true` on any finding where acting on it would touch files
 outside the current PR diff, refactor adjacent code not part of this change, or address a systemic
-issue that belongs in a separate PR. Do not silently file these as follow-up issues — they must
-surface in the HANDOFF as a human decision. A finding can be `quality: 0.3` (out of scope) and
-`scope_creep: true` simultaneously.
+issue that belongs in a separate PR. For each scope-creep finding scored ≥ 0.7 (verified and
+actionable), create a GitHub issue (`gh issue create`) with the finding details and include the
+issue URL in both the inline reply and the HANDOFF. Never defer actionable work without a tracking
+artifact. A finding can be `quality: 0.3` (out of scope) and `scope_creep: true` simultaneously
+— those do NOT require an issue (they are not actionable).
 
 **If every comment scored Unverified or Contradicted** (no Verified findings at all): post
 false-positive replies immediately for each, write HANDOFF, and exit. Do not run validation,
@@ -501,16 +506,19 @@ else
   echo "$COMMENT_ID" >> "$REPLIED_LOG"
 fi
 
-# Guard: skip if already replied
+  # Guard: skip if already replied
 if grep -qx "$COMMENT_ID" "$REPLIED_LOG" 2>/dev/null; then
   echo "Skipping reply to $COMMENT_ID — already replied this session"
 else
-  # Out of scope:
+  # Out of scope — MUST reference a created issue, never a promise:
   gh api -X POST "$GHE_API/repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
-    -f body="Not addressed in this PR — this change is outside the scope of the current diff. Tracked in <issue link or 'will create a follow-up issue'>." >/dev/null
+    -f body="Not addressed in this PR — this change is outside the scope of the current diff. Tracked in <issue URL created with gh issue create>." >/dev/null
   echo "$COMMENT_ID" >> "$REPLIED_LOG"
 fi
 ```
+
+**After posting each reply**, also check the feedback checkbox on the original comment (see
+[Check Feedback Checkbox on Bot Comments](#check-feedback-checkbox-on-bot-comments) below).
 
 ## Push and Wait for CI
 
@@ -583,6 +591,9 @@ else
   echo "$COMMENT_ID" >> "$REPLIED_LOG"
 fi
 ```
+
+**After posting each reply**, also check the feedback checkbox on the original comment (see
+[Check Feedback Checkbox on Bot Comments](#check-feedback-checkbox-on-bot-comments) below).
 
 **Good reply examples** (from real PRs in this repo):
 
@@ -662,6 +673,78 @@ jq -n \
 jq '.' "$REPLY_VERIFICATION_JSON"
 jq -e 'all(.[]; .has_reply == true)' "$REPLY_VERIFICATION_JSON" >/dev/null
 ```
+
+## Check Feedback Checkbox on Bot Comments
+
+Every bot review comment contains a feedback section with four checkboxes. After posting a reply
+to any bot comment, **also check the appropriate feedback checkbox** on the original comment by
+PATCHing the comment body. This provides structured quality signal back to the bot system.
+
+### Quality-to-Checkbox Mapping
+
+| Triage quality score | Checkbox to check | When to use |
+| --- | --- | --- |
+| 1.0 (actionable defect — exceptional) | `🌟 Awesome comment, a human might have missed that.` | Finding caught a subtle bug (time-dependent, race condition, security) that a human reviewer would likely miss |
+| 1.0 (actionable defect — standard) | `✅ Helpful comment` | Finding identified a real defect that was fixed |
+| 0.7 (actionable cleanup) | `✅ Helpful comment` | Finding identified real improvement that was fixed |
+| 0.3 (out of scope) | `🤷 Neutral` | Finding is technically correct but irrelevant to this PR |
+| 0.0 (false positive / contradicted) | `❌ This comment is not helpful` | Finding is factually wrong or the suggestion would break correct code |
+
+**Distinguishing “Awesome” from “Helpful” for quality-1.0 findings:** Use 🌟 Awesome only when
+the finding catches something genuinely subtle — e.g., time-dependent test fragility, stale
+closure in async code, security boundary violation, silent data corruption. Use ✅ Helpful for
+straightforward correctness issues (missing null check, wrong variable, type mismatch).
+
+### Procedure
+
+After posting a reply for comment `$COMMENT_ID`, check the feedback box. The `QUALITY` and
+`IS_AWESOME` values come from the finding's entry in `QUALITY_LOG` (written during triage):
+
+```bash
+# Look up this finding's quality score and awesome flag from the triage log
+QUALITY=$(jq -r --argjson id "$COMMENT_ID" 'select(.id == $id) | .quality' "$QUALITY_LOG" | head -1)
+IS_AWESOME=$(jq -r --argjson id "$COMMENT_ID" 'select(.id == $id) | .awesome // false' "$QUALITY_LOG" | head -1)
+
+# Determine which checkbox to check based on quality score.
+case "${IS_AWESOME:-false}:${QUALITY:-0.0}" in
+  true:*)       FEEDBACK_MARKER="PR-Bot Feedback Awesome" ;;
+  *:1.0|*:0.7)  FEEDBACK_MARKER="PR-Bot Feedback Helpful" ;;
+  *:0.3)        FEEDBACK_MARKER="PR-Bot Feedback Neutral" ;;
+  *)            FEEDBACK_MARKER="PR-Bot Feedback Not helpful" ;;
+esac
+
+# Fetch current comment body, check the box, PATCH it back.
+# Use a temp file to handle multiline bodies with special characters safely.
+FEEDBACK_TMP="/tmp/${SESSION_ID:-ghe-pr-review-loop}-feedback-$COMMENT_ID.json"
+gh api "$GHE_API/repos/$OWNER_REPO/pulls/comments/$COMMENT_ID" > "$FEEDBACK_TMP"
+
+if jq -r '.body' "$FEEDBACK_TMP" | grep -q "PR-Bot Feedback-Section-Start"; then
+  jq --arg marker "$FEEDBACK_MARKER" \
+    '{body: (.body | gsub("- \\[ \\] <!-- " + $marker + " -->"; "- [x] <!-- " + $marker + " -->"))}' \
+    "$FEEDBACK_TMP" > "${FEEDBACK_TMP}.patch"
+  gh api -X PATCH "$GHE_API/repos/$OWNER_REPO/pulls/comments/$COMMENT_ID" \
+    --input "${FEEDBACK_TMP}.patch" > /dev/null
+  rm -f "$FEEDBACK_TMP" "${FEEDBACK_TMP}.patch"
+  echo "Checked feedback [$FEEDBACK_MARKER] on comment $COMMENT_ID"
+else
+  rm -f "$FEEDBACK_TMP"
+  echo "No feedback section found on comment $COMMENT_ID — skipping checkbox"
+fi
+```
+
+**Important rules:**
+- Only check ONE checkbox per comment. Never check multiple.
+- Only check the box on **root** bot comments (not on reply comments).
+- If the comment body does not contain `PR-Bot Feedback-Section-Start`, skip — not all comments
+  have the feedback section.
+- Do this immediately after posting the reply, while the comment ID and quality score are in
+  scope. Do not batch these to later.
+- The `awesome` flag is set during triage when a finding is both verified-actionable AND
+  catches something a human reviewer would likely miss. Default is `false`. Set it to `true`
+  only with explicit justification noted in the triage log (e.g., "awesome: time-dependent
+  test bug that fires after 2026-06-15 passes").
+- If `QUALITY_LOG` lookup fails for a comment ID (e.g., comment was from a prior round),
+  fall back to `QUALITY=0.0` and `IS_AWESOME=false`.
 
 ## Append Round Score
 
@@ -764,6 +847,7 @@ Latest head: <sha>
 Fixed: <bullets>
 Rejected/qualified: <bullets>
 Scope creep flagged: <none | bullet per finding with comment ID and why it would expand scope>
+Deferred with issue: <none | bullet per finding with issue URL — every deferred actionable finding MUST have one>
 
 ## Validation
 <commands/results>
