@@ -193,7 +193,7 @@ Auto-detect or ask the user:
 | `MERGE_STRATEGY` | `squash` (default), `merge`, `rebase` | `squash` |
 | `TIMEOUT_IMPL` | Max time for implementation phase (seconds) | 2400 (40 min) |
 | `TIMEOUT_REVIEW` | Max time for self-review phase (seconds) | 1200 (20 min) |
-| `TIMEOUT_BOT` | Max time for bot review loop (seconds) | 2400 (40 min) |
+| `TIMEOUT_BOT` | Max time for bot review loop (seconds); must allow provider rate-limit sleeps | 7200 (2 hr) |
 
 `GHE_API` is deprecated as a config field. `pipeline.sh` still accepts it as a fallback for older
 configs, but new configs must set `AI_REVIEW_PROVIDER` and `AI_REVIEW_API_BASE`.

@@ -42,7 +42,7 @@ Optional (have defaults):
   REVIEW_LOOP_COUNT    — max bot review rounds (default: 5)
   TIMEOUT_IMPL         — implementation timeout in seconds (default: 2400)
   TIMEOUT_REVIEW       — self-review timeout in seconds (default: 1200)
-  TIMEOUT_BOT          — bot review timeout in seconds (default: 2400)
+  TIMEOUT_BOT          — bot review timeout in seconds (default: 7200)
   TIMEOUT_CI           — CI polling timeout in seconds (default: 600)
   TIMEOUT_GATE         — scope gate timeout in seconds (default: 120)
   SKIP_REVIEW          — 1 to skip self-review phase (default: 0)
@@ -168,7 +168,7 @@ MERGE_STRATEGY="${MERGE_STRATEGY:-squash}"
 REVIEW_LOOP_COUNT="${REVIEW_LOOP_COUNT:-5}"
 TIMEOUT_IMPL="${TIMEOUT_IMPL:-2400}"
 TIMEOUT_REVIEW="${TIMEOUT_REVIEW:-1200}"
-TIMEOUT_BOT="${TIMEOUT_BOT:-2400}"
+TIMEOUT_BOT="${TIMEOUT_BOT:-7200}"
 TIMEOUT_CI="${TIMEOUT_CI:-600}"
 TIMEOUT_GATE="${TIMEOUT_GATE:-120}"
 SKIP_REVIEW="${SKIP_REVIEW:-0}"

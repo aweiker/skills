@@ -60,7 +60,7 @@ Poll for new CodeRabbit reviews or new root inline comments after trigger epoch.
 - `usage limit`
 - `more reviews will be available`
 
-On usage limit: wait stated duration plus 30 seconds, retry once. On repeated usage limits, exponential backoff capped at 30 minutes and stop after three consecutive usage-limit comments.
+On usage limit: parse the stated availability time/duration, sleep until that time plus 30 seconds, then retry the same round. Do not hand off as `blocker` merely because the wait is long. If the provider gives no parseable duration, sleep 30 minutes and retry. On repeated usage limits, continue sleeping/retrying until the worker's external timeout is reached; only hand off as `blocker` when there is no parseable wait and three consecutive retries still produce usage-limit comments. While sleeping, append progress lines that include the detected reset time/duration so orchestration can distinguish intentional sleep from a hung worker.
 
 ## Finding Sources
 

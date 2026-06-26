@@ -38,7 +38,7 @@ Use this exact order each round:
    - unresolved inline/follow-up comments selected for triage;
    - current-head approval/no-actionable signal stops successfully;
    - otherwise one provider review trigger is required.
-3. If triggering, post exactly one provider trigger and wait by provider rules.
+3. If triggering, post exactly one provider trigger and wait by provider rules. Provider rate/usage limits are a wait state, not a blocker: sleep until the provider's stated reset time/duration plus safety margin, emit progress lines while sleeping, then retry within the same round.
 4. Build the selected findings set from provider rules.
 5. Read cited code and classify every finding:
    - `1.0` real actionable defect;
@@ -52,7 +52,7 @@ Use this exact order each round:
 10. Run focused validation and repo-required validation.
 11. Commit/push fixes.
 12. Reply to fixed actionable findings with commit SHA and `CI: pending`.
-13. Wait for CI. If red, investigate and hand off as blocker.
+13. Wait for CI. If red, investigate and hand off as blocker. Do not classify provider rate limits as CI failure or review blocker unless the provider-specific wait/retry budget is exhausted.
 14. Append one progress line and write/update HANDOFF.
 15. Stop when loop count is exhausted, provider approval is present, zero findings are present, or quality declines.
 
