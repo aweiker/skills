@@ -816,7 +816,7 @@ for i in "${!ISSUES[@]}"; do
       log "  Done"
       # Check for explicit bot-review blockers. Do not treat "Still blocked: none" as a blocker.
       if grep -Eiq "CI:.*(fail|red)|Exit reason:.*blocker" "$BOT_HANDOFF" 2>/dev/null || \
-        (grep -Eiq "Still blocked:" "$BOT_HANDOFF" 2>/dev/null && ! grep -Eiq "Still blocked:[[:space:]]*(none|$)" "$BOT_HANDOFF" 2>/dev/null); then
+        (grep -Eiq "Still blocked:" "$BOT_HANDOFF" 2>/dev/null && ! grep -Eiq "Still blocked:[[:space:]]*(none|0|zero|$)" "$BOT_HANDOFF" 2>/dev/null); then
         log "  Bot reports CI failure/blocker. Skipping merge."
         handle_issue_failure "$ISSUE" "bot review reported a blocker" || break
         continue
