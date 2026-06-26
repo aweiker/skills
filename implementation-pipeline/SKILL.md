@@ -194,6 +194,7 @@ Auto-detect or ask the user:
 | `TIMEOUT_IMPL` | Max time for implementation phase (seconds) | 2400 (40 min) |
 | `TIMEOUT_REVIEW` | Max time for self-review phase (seconds) | 1200 (20 min) |
 | `TIMEOUT_BOT` | Max time for bot review loop (seconds); must allow provider rate-limit sleeps | 7200 (2 hr) |
+| `LOCAL_CODERABBIT_PRECHECK` | For CodeRabbit provider, run local `coderabbit review` before push/PR creation | 1 |
 
 `GHE_API` is deprecated as a config field. `pipeline.sh` still accepts it as a fallback for older
 configs, but new configs must set `AI_REVIEW_PROVIDER` and `AI_REVIEW_API_BASE`.
@@ -284,6 +285,13 @@ tmux:
 2. Spawn design-first implementation agent, wait for handoff
 3. Spawn targeted-pr-review agent, wait for handoff
 4. Spawn ai-pr-review-loop worker agent with the selected provider, wait for handoff
+
+For `AI_REVIEW_PROVIDER=coderabbit`, the implementation prompt also instructs the implementation
+agent to run local `coderabbit review --agent --type committed --base <BASE_BRANCH>` after local
+validation and before push/PR creation when `LOCAL_CODERABBIT_PRECHECK=1`. This pre-PR pass is
+advisory but actionable: verified correctness/security/functional findings should be fixed before
+opening the PR; false-positive/stale/out-of-scope findings should be documented in the PR body or
+handoff. It does not replace the post-PR CodeRabbit approval/no-actionable gate.
 5. Merge if CI green
 6. Write handoff
 

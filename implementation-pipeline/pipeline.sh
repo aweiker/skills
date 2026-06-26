@@ -45,6 +45,7 @@ Optional (have defaults):
   TIMEOUT_BOT          — bot review timeout in seconds (default: 7200)
   TIMEOUT_CI           — CI polling timeout in seconds (default: 600)
   TIMEOUT_GATE         — scope gate timeout in seconds (default: 120)
+  LOCAL_CODERABBIT_PRECHECK — 1 to run local CodeRabbit CLI before PR for coderabbit provider (default: 1)
   SKIP_REVIEW          — 1 to skip self-review phase (default: 0)
   SKIP_BOT             — 1 to skip bot review phase (default: 0)
   SKIP_SCOPE_GATE      — 1 to skip scope gate (default: 0)
@@ -171,6 +172,7 @@ TIMEOUT_REVIEW="${TIMEOUT_REVIEW:-1200}"
 TIMEOUT_BOT="${TIMEOUT_BOT:-7200}"
 TIMEOUT_CI="${TIMEOUT_CI:-600}"
 TIMEOUT_GATE="${TIMEOUT_GATE:-120}"
+LOCAL_CODERABBIT_PRECHECK="${LOCAL_CODERABBIT_PRECHECK:-1}"
 SKIP_REVIEW="${SKIP_REVIEW:-0}"
 SKIP_BOT="${SKIP_BOT:-0}"
 SKIP_SCOPE_GATE="${SKIP_SCOPE_GATE:-0}"
@@ -474,10 +476,24 @@ generate_impl_prompt() {
   echo "2. Apply the design-first-implementation skill (full workflow if edge cases exist)"
   echo "3. Implement following all repository AGENTS.md rules"
   echo "4. Run make check (or the repo equivalent validation) and ensure it passes"
-  echo "5. Commit all changes with a descriptive message referencing #${issue}"
-  echo "6. Push the branch to origin"
-  echo "7. Open a PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
-  echo "8. Write a handoff to ${handoff} with: PR number, head SHA, validation results, files changed"
+  if [ "${AI_REVIEW_PROVIDER:-}" = "coderabbit" ] && [ "${LOCAL_CODERABBIT_PRECHECK:-1}" = "1" ]; then
+    echo "5. Before pushing or opening a PR, run the local CodeRabbit CLI precheck:"
+    echo "   - Verify availability with: command -v coderabbit && coderabbit doctor"
+    echo "   - Run: coderabbit review --agent --type committed --base ${BASE_BRANCH}"
+    echo "   - Then inspect findings with: coderabbit review findings"
+    echo "   - Treat verified functional/security/correctness findings as pre-PR defects: fix them, add/update tests, rerun validation, commit/amend as appropriate, and rerun the local CodeRabbit review."
+    echo "   - For false-positive, stale, or explicitly out-of-scope findings, record the rationale in the PR body/handoff; do not churn low-value suggestions."
+    echo "   - If the CLI is unavailable or authentication/service is down, record that in the handoff and continue to the normal post-PR CodeRabbit gate; do not fail solely because the local precheck cannot run."
+    echo "6. Commit all changes with a descriptive message referencing #${issue}"
+    echo "7. Push the branch to origin"
+    echo "8. Open a PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
+    echo "9. Write a handoff to ${handoff} with: PR number, head SHA, validation results, local CodeRabbit precheck result, files changed"
+  else
+    echo "5. Commit all changes with a descriptive message referencing #${issue}"
+    echo "6. Push the branch to origin"
+    echo "7. Open a PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
+    echo "8. Write a handoff to ${handoff} with: PR number, head SHA, validation results, files changed"
+  fi
   echo ""
   echo "Do NOT ask for clarification - implement based on the issue acceptance criteria."
   echo "Do NOT spawn another pi instance."
@@ -553,7 +569,7 @@ log "Repo:      $REPO"
 log "Issues:    ${ISSUES[*]}"
 log "Strategy:  $MERGE_STRATEGY"
 log "Timeouts:  impl=${TIMEOUT_IMPL}s rev=${TIMEOUT_REVIEW}s bot=${TIMEOUT_BOT}s ci=${TIMEOUT_CI}s"
-log "Flags:     review=${SKIP_REVIEW:+SKIP}${SKIP_REVIEW:-on} bot=${SKIP_BOT:+SKIP}${SKIP_BOT:-on} gate=${SKIP_SCOPE_GATE:+SKIP}${SKIP_SCOPE_GATE:-on} merge=${NO_MERGE:+NO}${NO_MERGE:-on} continue_on_failure=$CONTINUE_ON_FAILURE"
+log "Flags:     review=${SKIP_REVIEW:+SKIP}${SKIP_REVIEW:-on} bot=${SKIP_BOT:+SKIP}${SKIP_BOT:-on} gate=${SKIP_SCOPE_GATE:+SKIP}${SKIP_SCOPE_GATE:-on} merge=${NO_MERGE:+NO}${NO_MERGE:-on} continue_on_failure=$CONTINUE_ON_FAILURE local_coderabbit=$LOCAL_CODERABBIT_PRECHECK"
 log "Log dir:   $LOG_DIR"
 log "═══════════════════════════════════════════════════════════════"
 
