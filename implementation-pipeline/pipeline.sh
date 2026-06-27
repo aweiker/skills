@@ -486,12 +486,12 @@ generate_impl_prompt() {
     echo "   - If the CLI is unavailable or authentication/service is down, record that in the handoff and continue to the normal post-PR CodeRabbit gate; do not fail solely because the local precheck cannot run."
     echo "6. Commit all changes with a descriptive message referencing #${issue}"
     echo "7. Push the branch to origin"
-    echo "8. Open a PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
+    echo "8. Open a non-draft PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
     echo "9. Write a handoff to ${handoff} with: PR number, head SHA, validation results, local CodeRabbit precheck result, files changed"
   else
     echo "5. Commit all changes with a descriptive message referencing #${issue}"
     echo "6. Push the branch to origin"
-    echo "7. Open a PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
+    echo "7. Open a non-draft PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
     echo "8. Write a handoff to ${handoff} with: PR number, head SHA, validation results, files changed"
   fi
   echo ""
@@ -857,6 +857,12 @@ for i in "${!ISSUES[@]}"; do
   CI_FAILURES=$(wait_for_ci "$CURRENT_PR" "$TIMEOUT_CI") || true
 
   if [ "$CI_FAILURES" = "0" ]; then
+    # Draft PRs cannot be merged even when checks/reviews are green. Mark ready before merging.
+    if [ "$(gh pr view "$CURRENT_PR" --json isDraft -q .isDraft 2>/dev/null || echo false)" = "true" ]; then
+      log "  PR is draft; marking ready before merge"
+      gh pr ready "$CURRENT_PR" 2>/dev/null || true
+    fi
+
     # Remove worktree before merge so --delete-branch works
     cleanup_worktree "$WORKTREE"
 
