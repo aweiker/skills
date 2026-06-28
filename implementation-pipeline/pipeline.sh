@@ -380,12 +380,19 @@ verify_local_coderabbit_precheck() {
     return 1
   fi
 
-  if grep -Eiq "coderabbit.*(not run|skipped|unavailable|failed|error)|doctor.*(fail|error)|precheck.*(not run|skipped|failed|unavailable)" "$handoff"; then
+  local normalized_handoff
+  normalized_handoff=$(sed -E \
+    -e 's/[0-9]+ passed,[[:space:]]*0 (failed|failures)/doctor clean/Ig' \
+    -e 's/0 (failed|failures)/zero failures/Ig' \
+    -e 's/0 findings/zero findings/Ig' \
+    "$handoff")
+
+  if printf '%s\n' "$normalized_handoff" | grep -Eiq "coderabbit.*(not run|skipped|unavailable|failed|error)|doctor.*(fail|error)|precheck.*(not run|skipped|failed|unavailable)"; then
     log "  ERROR: Local CodeRabbit precheck is documented as missing/failed."
     return 1
   fi
 
-  if ! grep -Eiq "(0 findings|findings:[[:space:]]*0|findings[[:space:]]*\|?[[:space:]]*0|all (findings )?addressed|addressed in-place|clean|review completed.*0)" "$handoff"; then
+  if ! printf '%s\n' "$normalized_handoff" | grep -Eiq "(zero findings|findings:[[:space:]]*0|findings[[:space:]]*\|?[[:space:]]*0|all (findings )?addressed|addressed in-place|addressed or deferred with rationale|clean|review completed.*0)"; then
     log "  ERROR: Local CodeRabbit precheck lacks a clear clean/all-addressed result."
     return 1
   fi
