@@ -391,7 +391,7 @@ verify_local_coderabbit_precheck() {
   local normalized_handoff
   normalized_handoff=$(sed -E \
     -e 's/[0-9]+ passed,[[:space:]]*0 (failed|failures)/doctor clean/Ig' \
-    -e 's/0 (failed|failures)/zero failures/Ig' \
+    -e 's/0 (failed|failures)/zero problems/Ig' \
     -e 's/0 findings/zero findings/Ig' \
     "$handoff")
 
