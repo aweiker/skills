@@ -58,6 +58,14 @@ Optional (have defaults):
   BOT_SKILL            — skill path for bot review (default: ai-pr-review-loop)
   GHE_API              — deprecated fallback for AI_REVIEW_API_BASE
   EXTRA_IMPL_CONTEXT   — extra text appended to implementation prompt
+
+Tracker checkpoint entries:
+  To verify and close a split parent tracker before downstream issues, include the parent issue in
+  ISSUES and set the matching BRANCHES entry to:
+    tracker:CHILD1,CHILD2,...
+  Example:
+    ISSUES=(470 471 472 473 422 413)
+    BRANCHES=("issue-470" "issue-471" "issue-472" "issue-473" "tracker:470,471,472,473" "issue-413")
 EOF
   exit 1
 }
@@ -459,6 +467,72 @@ handle_issue_failure() {
   return 1
 }
 
+process_tracker_checkpoint() {
+  local issue="$1" branch_spec="$2"
+  local child_csv="${branch_spec#tracker:}"
+  local child state title
+  local open_children=()
+
+  if [ -z "$child_csv" ] || [ "$child_csv" = "$branch_spec" ]; then
+    handle_issue_failure "$issue" "invalid tracker checkpoint branch spec: $branch_spec"
+    return 1
+  fi
+
+  log "[tracker] Verifying split tracker #$issue children: $child_csv"
+
+  IFS=',' read -r -a children <<< "$child_csv"
+  for child in "${children[@]}"; do
+    child="${child//#/}"
+    child="${child//[[:space:]]/}"
+    if [ -z "$child" ]; then
+      continue
+    fi
+
+    state=$(gh issue view "$child" --repo "$OWNER_REPO" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+    if [ "$state" != "CLOSED" ]; then
+      open_children+=("#$child:$state")
+    fi
+  done
+
+  if [ ${#open_children[@]} -gt 0 ]; then
+    handle_issue_failure "$issue" "tracker children not complete: ${open_children[*]}"
+    return 1
+  fi
+
+  state=$(gh issue view "$issue" --repo "$OWNER_REPO" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+  title=$(gh issue view "$issue" --repo "$OWNER_REPO" --json title --jq .title 2>/dev/null || echo "")
+
+  if [ "$state" = "CLOSED" ]; then
+    log "  Tracker #$issue already closed ✓"
+  elif [ "$state" = "OPEN" ]; then
+    local comment_file
+    comment_file="$LOG_DIR/tracker-${issue}-complete.md"
+    {
+      echo "Tracker checkpoint complete."
+      echo ""
+      echo "All split child issues are closed:"
+      echo ""
+      for child in "${children[@]}"; do
+        child="${child//#/}"
+        child="${child//[[:space:]]/}"
+        [ -n "$child" ] && echo "- #$child"
+      done
+      echo ""
+      echo "Downstream issues may treat this tracker dependency as satisfied."
+    } > "$comment_file"
+    gh issue comment "$issue" --repo "$OWNER_REPO" --body-file "$comment_file" >/dev/null
+    gh issue close "$issue" --repo "$OWNER_REPO" --comment "Closing tracker checkpoint: all split child issues are complete." >/dev/null
+    log "  Closed tracker #$issue ${title:+— $title} ✓"
+  else
+    handle_issue_failure "$issue" "cannot verify tracker state for #$issue (state=$state)"
+    return 1
+  fi
+
+  ISSUES_COMPLETED+=("$issue")
+  write_status "running"
+  return 0
+}
+
 # ── Prompt generators ────────────────────────────────────────────────────────
 # These functions produce the prompt files. They are the ONLY place where
 # prompt text lives. The AI agent cannot modify pipeline behavior because
@@ -655,6 +729,17 @@ for i in "${!ISSUES[@]}"; do
   log "══════════════════════════════════════"
   log "ISSUE #$ISSUE — $BRANCH"
   log "══════════════════════════════════════"
+
+  if [[ "$BRANCH" == tracker:* ]]; then
+    CURRENT_PHASE="tracker-checkpoint"
+    CURRENT_PR=""
+    CURRENT_AGENT_PID=""
+    write_status "running"
+    if ! process_tracker_checkpoint "$ISSUE" "$BRANCH"; then
+      break
+    fi
+    continue
+  fi
 
   # ── Phase 1: Worktree setup ───────────────────────────
   CURRENT_PHASE="worktree-setup"

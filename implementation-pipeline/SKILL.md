@@ -19,6 +19,38 @@ worktree setup → design-first implementation → targeted self-review → bot 
 - User asks to "run an implementation loop" or "automate these issues"
 - User wants end-to-end: implement → review → merge for a batch
 
+## Split Tracker Checkpoints
+
+When an oversized issue is split into child issues, the parent tracker is still work. Do not leave it
+as an implicit dependency for later scope gates to trip over.
+
+Queue split work as:
+
+```text
+child-1, child-2, ..., child-N, parent-tracker-checkpoint, downstream-dependent
+```
+
+The checkpoint verifies every child issue is closed, comments on/closes the parent tracker, and only
+then lets downstream dependent issues proceed. If any child is still open, the checkpoint blocks.
+
+In pipeline config, represent a tracker checkpoint by including the parent issue in `ISSUES` and a
+matching `BRANCHES` entry with the child list:
+
+```bash
+ISSUES=(470 471 472 473 422 413)
+BRANCHES=(
+  "issue-470-..."
+  "issue-471-..."
+  "issue-472-..."
+  "issue-473-..."
+  "tracker:470,471,472,473"
+  "issue-413-..."
+)
+```
+
+Do not skip the parent tracker merely because it is not directly implementable. A split tracker is
+complete only after its children are merged and the tracker itself is closed or verified closed.
+
 ## Mode Selection
 
 - If the user prompt contains `worker mode`: execute a single issue pipeline directly (do not spawn).
@@ -29,8 +61,9 @@ worktree setup → design-first implementation → targeted self-review → bot 
 Before generating the pipeline, ask yourself:
 
 - **Dependency order**: Do any issues depend on code from earlier issues? If yes, they must be
-  sequential and the dependent issue must come after its prerequisite merges. If issues are
-  independent, note that parallel execution is possible (but this skill does sequential only).
+  sequential and the dependent issue must come after its prerequisite merges. If a dependency is a
+  split parent tracker, include a tracker checkpoint immediately after the final child and before any
+  downstream dependent issue.
 - **Scope per issue**: Is each issue small enough for a single agent session (40 min timeout)?
   If an issue looks like it needs >1 PR, flag it to the user before starting.
 - **Repository readiness**: Does `make check` pass on main right now? If not, the pipeline will

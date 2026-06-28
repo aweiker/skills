@@ -62,14 +62,35 @@ should use the provider-neutral field.
 | `GHE_API` | Deprecated fallback for `AI_REVIEW_API_BASE`; do not use in new configs |
 | `BASE_BRANCH` | `origin/HEAD` default branch; set explicitly when repo uses `master` |
 | `ISSUES` | User provides |
-| `BRANCHES` | Auto-generate: `issue-<N>-<slugified-title>` from `gh issue view <N>` |
+| `BRANCHES` | Auto-generate: `issue-<N>-<slugified-title>` from `gh issue view <N>`; for split tracker checkpoints use `tracker:<child>,<child>` |
 | `MERGE_STRATEGY` | User preference or repo convention (default: squash) |
 | `CONTINUE_ON_FAILURE` | Keep `0` for roadmap/dependent sequences; set `1` only for independent best-effort batches |
 | Timeouts | Use defaults unless user has reason to change |
 
+## Tracker checkpoint entries
+
+When a broad issue is split into child issues, keep the parent tracker in the queue after the final
+child and before downstream dependents. Use a `tracker:` branch entry listing children:
+
+```bash
+ISSUES=(470 471 472 473 422 413)
+BRANCHES=(
+  "issue-470-implement-environment-selector-component"
+  "issue-471-implement-environment-selection-url-and-liveview-assign-helpers"
+  "issue-472-implement-invalid-and-missing-environment-selection-handling"
+  "issue-473-implement-multi-tab-safe-environment-switch-behavior"
+  "tracker:470,471,472,473"
+  "issue-413-update-credentials-ui-for-separate-paper-live-credential-cards"
+)
+```
+
+The pipeline does not create a worktree for tracker entries. It verifies every listed child is
+closed, comments on/closes the parent tracker if needed, marks the checkpoint complete, and then
+continues. If any child remains open, the checkpoint blocks.
+
 ## Branch name generation
 
-For each issue, generate a branch name:
+For each implementation issue, generate a branch name:
 
 ```bash
 # Get issue title, lowercase, replace non-alphanumeric with hyphens, truncate
