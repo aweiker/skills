@@ -329,6 +329,11 @@ assertIncludes(
   "export function classifyState"
 );
 assertIncludes(
+  "source: exported elapsedIssue",
+  src,
+  "export function elapsedIssue"
+);
+assertIncludes(
   "source: resumePipeline calls planResumeAction(",
   src,
   "planResumeAction("
@@ -798,6 +803,93 @@ process.stdout.write(JSON.stringify(formatResumeError(value${maxArg})));
 {
   const r = callFormatResumeError("something", 0);
   assertEqual("custom max=0: null", null, r);
+}
+
+// ── elapsedIssue pure helper tests ───────────────────────────────────────────
+console.log("\n=== elapsedIssue pure helper ===");
+
+function callElapsedIssueRaw(statusExpr, nowMs) {
+  const nowArg = nowMs === undefined ? "" : `, ${JSON.stringify(nowMs)}`;
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module"],
+    {
+      input: `
+import { elapsedIssue } from ${JSON.stringify(extFile)};
+const status = ${statusExpr};
+process.stdout.write(JSON.stringify(elapsedIssue(status${nowArg})));
+`,
+      encoding: "utf8",
+      timeout: 10000,
+    }
+  );
+  return JSON.parse(result);
+}
+
+const baseNow = Date.parse("2026-06-30T10:05:00Z");
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: "2026-06-30T10:00:00Z", current_issue_elapsed_seconds: 61 }', baseNow);
+  assertEqual("timestamp wins over frozen elapsed integer", "5m", r);
+  if (r !== "1m1s") ok("timestamp result is not frozen 1m1s snapshot");
+  else fail("timestamp result is not frozen 1m1s snapshot", `got ${r}`);
+}
+
+{
+  const r1 = callElapsedIssueRaw('{ current_issue_started_at: "2026-06-30T10:04:00Z", current_issue_elapsed_seconds: 61 }', baseNow);
+  const r2 = callElapsedIssueRaw('{ current_issue_started_at: "2026-06-30T10:04:00Z", current_issue_elapsed_seconds: 61 }', baseNow + 60_000);
+  assertEqual("timestamp-derived issue age at first render", "1m", r1);
+  assertEqual("timestamp-derived issue age advances on later render", "2m", r2);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: null, current_issue_elapsed_seconds: 61 }', baseNow);
+  assertEqual("null timestamp falls back to elapsed integer", "1m1s", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_elapsed_seconds: 90 }', baseNow);
+  assertEqual("absent timestamp falls back to elapsed integer", "1m30s", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: "", current_issue_elapsed_seconds: 45 }', baseNow);
+  assertEqual("empty timestamp falls back to elapsed integer", "45s", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: "not-a-date", current_issue_elapsed_seconds: 30 }', baseNow);
+  assertEqual("malformed timestamp falls back to elapsed integer", "30s", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: null, current_issue_elapsed_seconds: null }', baseNow);
+  assertEqual("null timestamp and null integer returns unknown", "unknown", r);
+}
+
+{
+  const r = callElapsedIssueRaw('undefined', baseNow);
+  assertEqual("undefined status returns unknown", "unknown", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: "2026-06-30T10:15:00Z", current_issue_elapsed_seconds: 600 }', baseNow);
+  assertEqual("future timestamp clamps to zero", "0s", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: null, current_issue_elapsed_seconds: 0 }', baseNow);
+  assertEqual("zero elapsed integer is valid fallback", "0s", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: null, current_issue_elapsed_seconds: NaN }', baseNow);
+  assertEqual("NaN elapsed integer returns unknown", "unknown", r);
+}
+
+{
+  const r = callElapsedIssueRaw('{ current_issue_started_at: "2026-06-30T10:04:30Z", current_issue_elapsed_seconds: 0 }', baseNow);
+  assertEqual("timestamp wins over zero elapsed integer", "30s", r);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

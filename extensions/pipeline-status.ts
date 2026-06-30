@@ -589,18 +589,24 @@ function truncatePlain(text: string, width: number): string {
 	return text.slice(0, width - 1) + "…";
 }
 
-function elapsedSince(iso: string | null | undefined): string {
+function elapsedSince(iso: string | null | undefined, nowMs = Date.now()): string {
 	if (!iso) return "unknown";
 	const started = Date.parse(iso);
 	if (!Number.isFinite(started)) return "unknown";
-	return formatDuration(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+	return formatDuration(Math.max(0, Math.floor((nowMs - started) / 1000)));
 }
 
-function elapsedIssue(status: PipelineStatus | undefined): string {
-	if (typeof status?.current_issue_elapsed_seconds === "number") {
-		return formatDuration(status.current_issue_elapsed_seconds);
+export function elapsedIssue(status: PipelineStatus | undefined, nowMs = Date.now()): string {
+	const fromTimestamp = elapsedSince(status?.current_issue_started_at, nowMs);
+	if (fromTimestamp !== "unknown") return fromTimestamp;
+
+	// current_issue_elapsed_seconds is a write-time snapshot. Use it only as a
+	// fallback for old/sparse status files that do not have a parseable start time.
+	const elapsedSeconds = status?.current_issue_elapsed_seconds;
+	if (typeof elapsedSeconds === "number" && Number.isFinite(elapsedSeconds)) {
+		return formatDuration(Math.max(0, Math.floor(elapsedSeconds)));
 	}
-	return elapsedSince(status?.current_issue_started_at);
+	return "unknown";
 }
 
 function completedIssueDetails(status: PipelineStatus | undefined): CompletedIssue[] {
