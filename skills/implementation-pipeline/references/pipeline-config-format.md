@@ -33,6 +33,11 @@ TIMEOUT_REVIEW=1200    # 20 min
 TIMEOUT_BOT=7200       # 2 hr; lets AI review workers sleep through provider rate limits
 TIMEOUT_CI=600         # 10 min
 TIMEOUT_GATE=120       # 2 min
+HANDOFF_POLL_SECONDS=5 # handoff-file polling interval for agent phases
+CI_POLL_SECONDS=10     # CI status polling interval
+PAUSE_POLL_SECONDS=2   # paused control-file polling interval
+DEAD_AGENT_FLUSH_SECONDS=2  # grace period for handoff file after agent PID exits
+FINAL_STATUS_SETTLE_SECONDS=0  # optional post-issue settle delay; 0 means no delay
 LOCAL_CODERABBIT_PRECHECK=1  # enforce local `coderabbit review` before opening PRs when provider=coderabbit
 SKIP_REVIEW=0
 SKIP_BOT=0
@@ -70,6 +75,7 @@ should use the provider-neutral field.
 | `ALLOW_CONCURRENT_REPO_PIPELINES` | Keep `0` by default; set `1` only with explicit user approval after verifying same-repo pipelines cannot interfere |
 | `PIPELINE_REGISTRY_ROOT` | Runtime status registry for pi extensions; keep default unless testing |
 | Timeouts | Use defaults unless user has reason to change |
+| Poll intervals | Use defaults unless the pipeline is over-polling external APIs or needs slower local filesystem polling |
 
 ## Tracker checkpoint entries
 
@@ -152,6 +158,8 @@ best-effort batch is desired.
 - Do NOT generate ad-hoc bash scripts that replicate pipeline logic
 - Do NOT inline pipeline phases into the conversation
 - Do NOT override timeouts below safety minimums (TIMEOUT_GATE < 30, TIMEOUT_CI < 60)
+- Do NOT set poll intervals to `0`, negative, fractional, or non-integer values; `FINAL_STATUS_SETTLE_SECONDS=0` is the only zero-valued timing knob and means no post-issue delay
+- Do NOT set poll intervals close to or above their related timeout unless you intentionally accept coarse timeout behavior
 - Do NOT set SKIP_SCOPE_GATE=1 without explicit user permission
 - Do NOT set CONTINUE_ON_FAILURE=1 for roadmap-ordered, prerequisite-linked, or otherwise dependent issue sequences
 - Do NOT set ALLOW_CONCURRENT_REPO_PIPELINES=1 without explicit user permission and a concrete non-interference check
@@ -165,7 +173,8 @@ The script validates the config at startup and exits with clear errors if:
 - REPO is not a git directory
 - MERGE_STRATEGY is invalid
 - Boolean toggles are not `0` or `1`
-- Timeouts are not positive integers
+- Timeouts and poll intervals are not positive integers
+- `FINAL_STATUS_SETTLE_SECONDS` is not a non-negative integer
 - Another pipeline is already running for the same canonical repo path and `ALLOW_CONCURRENT_REPO_PIPELINES` is not set
 - `pi` or `gh` commands are not available
 

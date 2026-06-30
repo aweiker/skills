@@ -49,6 +49,11 @@ Optional (have defaults):
   TIMEOUT_BOT          — bot review timeout in seconds (default: 7200)
   TIMEOUT_CI           — CI polling timeout in seconds (default: 600)
   TIMEOUT_GATE         — scope gate timeout in seconds (default: 120)
+  HANDOFF_POLL_SECONDS — handoff-file polling interval (default: 5)
+  CI_POLL_SECONDS      — CI status polling interval (default: 10)
+  PAUSE_POLL_SECONDS   — paused control-file polling interval (default: 2)
+  DEAD_AGENT_FLUSH_SECONDS — dead-agent handoff flush grace period (default: 2)
+  FINAL_STATUS_SETTLE_SECONDS — final status settle delay after each issue (default: 0)
   LOCAL_CODERABBIT_PRECHECK — 1 to run local CodeRabbit CLI before PR for coderabbit provider (default: 1)
   SKIP_REVIEW          — 1 to skip self-review phase (default: 0)
   SKIP_BOT             — 1 to skip bot review phase (default: 0)
@@ -133,13 +138,19 @@ validate_config() {
     fi
   done
 
-  # Timeouts must be positive integers
-  for var in TIMEOUT_IMPL TIMEOUT_REVIEW TIMEOUT_BOT TIMEOUT_CI TIMEOUT_GATE; do
+  # Timeouts and polling intervals must be positive integers.
+  for var in TIMEOUT_IMPL TIMEOUT_REVIEW TIMEOUT_BOT TIMEOUT_CI TIMEOUT_GATE HANDOFF_POLL_SECONDS CI_POLL_SECONDS PAUSE_POLL_SECONDS DEAD_AGENT_FLUSH_SECONDS; do
     if ! [[ "${!var:-0}" =~ ^[0-9]+$ ]] || [ "${!var:-0}" -eq 0 ]; then
       echo "ERROR: $var must be a positive integer (got: ${!var:-})" >&2
       errors=$((errors + 1))
     fi
   done
+
+  # Final status settle is not a poll loop; zero is valid and means no delay.
+  if ! [[ "${FINAL_STATUS_SETTLE_SECONDS:-0}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: FINAL_STATUS_SETTLE_SECONDS must be a non-negative integer (got: ${FINAL_STATUS_SETTLE_SECONDS:-})" >&2
+    errors=$((errors + 1))
+  fi
 
   # pi must be available
   if ! command -v pi >/dev/null 2>&1; then
@@ -237,6 +248,11 @@ TIMEOUT_REVIEW="${TIMEOUT_REVIEW:-1200}"
 TIMEOUT_BOT="${TIMEOUT_BOT:-7200}"
 TIMEOUT_CI="${TIMEOUT_CI:-600}"
 TIMEOUT_GATE="${TIMEOUT_GATE:-120}"
+HANDOFF_POLL_SECONDS="${HANDOFF_POLL_SECONDS:-5}"
+CI_POLL_SECONDS="${CI_POLL_SECONDS:-10}"
+PAUSE_POLL_SECONDS="${PAUSE_POLL_SECONDS:-2}"
+DEAD_AGENT_FLUSH_SECONDS="${DEAD_AGENT_FLUSH_SECONDS:-2}"
+FINAL_STATUS_SETTLE_SECONDS="${FINAL_STATUS_SETTLE_SECONDS:-0}"
 LOCAL_CODERABBIT_PRECHECK="${LOCAL_CODERABBIT_PRECHECK:-1}"
 SKIP_REVIEW="${SKIP_REVIEW:-0}"
 SKIP_BOT="${SKIP_BOT:-0}"
@@ -700,11 +716,20 @@ check_control() {
   fi
 }
 
+final_status_settle() {
+  local seconds="${FINAL_STATUS_SETTLE_SECONDS:-0}"
+  if [ "$seconds" -gt 0 ]; then
+    sleep "$seconds"
+  fi
+}
+
 wait_for_handoff() {
   local handoff_file="$1"
   local timeout="$2"
   local agent_pid="${3:-}"
   local elapsed=0
+  local poll_seconds="${HANDOFF_POLL_SECONDS:-5}"
+  local dead_flush_seconds="${DEAD_AGENT_FLUSH_SECONDS:-2}"
 
   while [ $elapsed -lt "$timeout" ]; do
     # File must exist AND be non-empty (guards against partial writes)
@@ -715,7 +740,7 @@ wait_for_handoff() {
     # Dead-PID detection
     if [ -n "$agent_pid" ] && ! kill -0 "$agent_pid" 2>/dev/null; then
       # Grace period for filesystem flush
-      sleep 5
+      sleep "$dead_flush_seconds"
       if [ -f "$handoff_file" ] && [ -s "$handoff_file" ]; then
         return 0
       fi
@@ -723,8 +748,8 @@ wait_for_handoff() {
       return 1
     fi
 
-    sleep 30
-    elapsed=$((elapsed + 30))
+    sleep "$poll_seconds"
+    elapsed=$((elapsed + poll_seconds))
 
     # Heartbeat every 5 minutes
     if (( elapsed % 300 == 0 )); then
@@ -813,6 +838,7 @@ wait_for_ci() {
   local pr="$1"
   local timeout="${2:-$TIMEOUT_CI}"
   local elapsed=0
+  local poll_seconds="${CI_POLL_SECONDS:-10}"
 
   log "    Polling CI (max ${timeout}s)..." >&2
   while [ $elapsed -lt "$timeout" ]; do
@@ -847,8 +873,8 @@ wait_for_ci() {
       return 0
     fi
 
-    sleep 30
-    elapsed=$((elapsed + 30))
+    sleep "$poll_seconds"
+    elapsed=$((elapsed + poll_seconds))
     if (( elapsed % 120 == 0 )); then
       log "    CI: ${pending:-?} authoritative checks pending (${elapsed}s)" >&2
     fi
@@ -1571,6 +1597,11 @@ resume_entrypoint() {
   TIMEOUT_BOT="${TIMEOUT_BOT:-7200}"
   TIMEOUT_CI="${TIMEOUT_CI:-600}"
   TIMEOUT_GATE="${TIMEOUT_GATE:-120}"
+  HANDOFF_POLL_SECONDS="${HANDOFF_POLL_SECONDS:-5}"
+  CI_POLL_SECONDS="${CI_POLL_SECONDS:-10}"
+  PAUSE_POLL_SECONDS="${PAUSE_POLL_SECONDS:-2}"
+  DEAD_AGENT_FLUSH_SECONDS="${DEAD_AGENT_FLUSH_SECONDS:-2}"
+  FINAL_STATUS_SETTLE_SECONDS="${FINAL_STATUS_SETTLE_SECONDS:-0}"
   LOCAL_CODERABBIT_PRECHECK="${LOCAL_CODERABBIT_PRECHECK:-1}"
   SKIP_REVIEW="${SKIP_REVIEW:-0}"
   SKIP_BOT="${SKIP_BOT:-0}"
@@ -1746,6 +1777,7 @@ else
   log "Issues:    ${ISSUES[*]}"
   log "Strategy:  $MERGE_STRATEGY"
   log "Timeouts:  impl=${TIMEOUT_IMPL}s rev=${TIMEOUT_REVIEW}s bot=${TIMEOUT_BOT}s ci=${TIMEOUT_CI}s"
+  log "Polling:   handoff=${HANDOFF_POLL_SECONDS}s ci=${CI_POLL_SECONDS}s pause=${PAUSE_POLL_SECONDS}s dead_flush=${DEAD_AGENT_FLUSH_SECONDS}s final_settle=${FINAL_STATUS_SETTLE_SECONDS}s"
   log "Flags:     review=${SKIP_REVIEW:+SKIP}${SKIP_REVIEW:-on} bot=${SKIP_BOT:+SKIP}${SKIP_BOT:-on} gate=${SKIP_SCOPE_GATE:+SKIP}${SKIP_SCOPE_GATE:-on} merge=${NO_MERGE:+NO}${NO_MERGE:-on} continue_on_failure=$CONTINUE_ON_FAILURE local_coderabbit=$LOCAL_CODERABBIT_PRECHECK"
   log "Log dir:   $LOG_DIR"
   log "═══════════════════════════════════════════════════════════════"
@@ -1814,7 +1846,7 @@ for i in "${!ISSUES[@]}"; do
       update_lock_state "paused"
       log "Pipeline paused. next_issue=#${ISSUES[$i]} (index $i). Write 'resume' or 'abort' to $LOG_DIR/control"
       while true; do
-        sleep 10
+        sleep "${PAUSE_POLL_SECONDS:-2}"
         CTRL=$(check_control)
         case "$CTRL" in
           resume)
@@ -2170,7 +2202,7 @@ for i in "${!ISSUES[@]}"; do
   clear_phase
   log "  Issue #$ISSUE done ✓"
   write_status "running"
-  sleep 10
+  final_status_settle
 done
 
 # ── Clean exit ───────────────────────────────────────────────────────────────

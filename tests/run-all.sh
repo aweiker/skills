@@ -34,6 +34,8 @@ run_step bash tests/pipeline/test-resume-validation.sh
 
 run_step bash tests/pipeline/test-resume-supported.sh
 
+run_step bash tests/pipeline/test-poll-intervals.sh
+
 run_step bash tests/pipeline/test-resume-entrypoint.sh
 
 run_step node tests/pipeline/test-pipeline-resume-extension.mjs
@@ -46,6 +48,7 @@ run_step shellcheck \
   tests/pipeline/test-durable-pause.sh \
   tests/pipeline/test-resume-validation.sh \
   tests/pipeline/test-resume-supported.sh \
+  tests/pipeline/test-poll-intervals.sh \
   tests/pipeline/test-resume-entrypoint.sh
 
 echo ""
