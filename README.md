@@ -121,6 +121,12 @@ can keep the final result visible.
 See `skills/implementation-pipeline/references/monitoring-and-steering.md` for the full monitoring
 and control protocol.
 
+## Plans
+
+Execution plans for larger changes live under `docs/plans/`.
+
+- `docs/plans/resumable-implementation-pipelines.md` — design and execution plan for safe checkpoint-based pipeline resume.
+
 ## Development workflow
 
 Validate shell and TypeScript extension syntax before committing:
