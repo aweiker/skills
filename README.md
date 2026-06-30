@@ -129,11 +129,13 @@ Execution plans for larger changes live under `docs/plans/`.
 
 ## Development workflow
 
-Validate shell and TypeScript extension syntax before committing:
+Validate shell, extension syntax, and pipeline status helpers before committing:
 
 ```bash
 bash -n skills/implementation-pipeline/pipeline.sh
 node --experimental-strip-types --check extensions/pipeline-status.ts
+bash tests/pipeline/test-cursor-status.sh
+shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh
 ```
 
 Check package visibility:

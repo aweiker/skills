@@ -18,9 +18,11 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
+SCRIPT_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+readonly SCRIPT_FILE
 
 # ── Config loading and validation ────────────────────────────────────────────
 
@@ -350,7 +352,7 @@ repo_lock_name() {
 }
 
 acquire_repo_lock() {
-  local repo_canonical lock_root lock_name lock_pid existing same_repo
+  local repo_canonical lock_root lock_name lock_pid same_repo
   repo_canonical=$(canonical_repo_path)
   lock_root="${PIPELINE_LOCK_ROOT:-/tmp/pi-pipeline-locks}"
   lock_name=$(repo_lock_name "$repo_canonical")
@@ -508,31 +510,82 @@ mark_issue_completed() {
   ISSUES_COMPLETED_DETAILS+=("{\"issue\":$issue,\"pr\":$pr_json,\"started_at\":\"${CURRENT_ISSUE_STARTED_AT:-}\",\"completed_at\":\"$completed_at\",\"duration_seconds\":$duration}")
 }
 
+# Derive issues_remaining from cursor: issues at indices > CURRENT_ISSUE_INDEX
+# Before the loop starts CURRENT_ISSUE_INDEX is empty, so all issues are remaining.
+# While issue at index i is active, CURRENT_ISSUE_INDEX=i and NEXT_ISSUE_INDEX=i+1,
+# so issues_remaining = ISSUES[i+1 ..] — identical semantics to the prior destructive shift.
+derive_issues_remaining() {
+  local start_idx="${1:-0}"
+  local i remaining=()
+  for i in "${!ISSUES[@]}"; do
+    if [ "$i" -ge "$start_idx" ]; then
+      remaining+=("${ISSUES[$i]}")
+    fi
+  done
+  if [ ${#remaining[@]} -gt 0 ]; then
+    (IFS=,; echo "${remaining[*]}")
+  else
+    echo ""
+  fi
+}
+
+next_issue_value() {
+  local idx="${NEXT_ISSUE_INDEX:-0}"
+  if [ -n "$idx" ] && [ "$idx" -lt "${#ISSUES[@]}" ]; then
+    echo "${ISSUES[$idx]}"
+  else
+    echo "null"
+  fi
+}
+
 write_status() {
   local state="$1"
-  local repo_canonical phase_started_json
+  local repo_canonical phase_started_json issues_remaining_csv next_issue_val
+  local current_issue_index_json next_issue_index_json
   repo_canonical=$(canonical_repo_path)
   if [ -n "${CURRENT_PHASE_STARTED_AT:-}" ]; then
     phase_started_json="\"$CURRENT_PHASE_STARTED_AT\""
   else
     phase_started_json="null"
   fi
+  # issues_remaining: excludes current issue (uses NEXT_ISSUE_INDEX)
+  issues_remaining_csv="$(derive_issues_remaining "${NEXT_ISSUE_INDEX:-0}")"
+  next_issue_val="$(next_issue_value)"
+  # JSON-encode index fields (null before loop starts)
+  if [ -n "${CURRENT_ISSUE_INDEX:-}" ]; then
+    current_issue_index_json="$CURRENT_ISSUE_INDEX"
+  else
+    current_issue_index_json="null"
+  fi
+  if [ -n "${NEXT_ISSUE_INDEX:-}" ]; then
+    next_issue_index_json="$NEXT_ISSUE_INDEX"
+  else
+    next_issue_index_json="null"
+  fi
   cat > "$LOG_DIR/status.json.tmp" <<EOF
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "pipeline_state": "$state",
   "version": "$VERSION",
+  "resume_supported": false,
+  "checkpoint": null,
   "pipeline_id": "${PIPELINE_ID:-}",
   "pid": $$,
   "repo": "$repo_canonical",
   "repo_name": "$(basename "$repo_canonical")",
   "config_file": "$CONFIG_FILE",
+  "script_file": "$SCRIPT_FILE",
+  "script_version": "$VERSION",
+  "config_sha256": "${CONFIG_SHA256:-}",
   "log_dir": "$LOG_DIR",
   "status_file": "$LOG_DIR/status.json",
   "log_file": "$LOG_DIR/loop.log",
   "control_file": "$LOG_DIR/control",
   "started_at": "$PIPELINE_START",
   "current_issue": ${CURRENT_ISSUE:-null},
+  "current_issue_index": $current_issue_index_json,
+  "next_issue_index": $next_issue_index_json,
+  "next_issue": $next_issue_val,
   "current_phase": "${CURRENT_PHASE:-}",
   "current_phase_started_at": $phase_started_json,
   "current_issue_started_at": "${CURRENT_ISSUE_STARTED_AT:-}",
@@ -543,7 +596,7 @@ write_status() {
   "issues_completed": [$(IFS=,; echo "${ISSUES_COMPLETED[*]:-}")],
   "issues_completed_details": [$(json_issue_records)],
   "issues_skipped": [$(IFS=,; echo "${ISSUES_SKIPPED[*]:-}")],
-  "issues_remaining": [$(IFS=,; echo "${ISSUES_REMAINING[*]:-}")],
+  "issues_remaining": [$issues_remaining_csv],
   "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
@@ -952,8 +1005,9 @@ PIPELINE_ID="$(pipeline_id_from_log_dir)"
 ISSUES_COMPLETED=()
 ISSUES_COMPLETED_DETAILS=()
 ISSUES_SKIPPED=()
-ISSUES_REMAINING=("${ISSUES[@]}")
 CURRENT_ISSUE=""
+CURRENT_ISSUE_INDEX=""
+NEXT_ISSUE_INDEX="0"
 CURRENT_ISSUE_STARTED_AT=""
 CURRENT_ISSUE_STARTED_EPOCH=""
 CURRENT_PHASE=""
@@ -961,6 +1015,16 @@ CURRENT_PHASE_STARTED_AT=""
 CURRENT_PR=""
 CURRENT_AGENT_PID=""
 PIPELINE_TERMINAL_STATE="completed"
+
+# Compute CONFIG_SHA256 once, defensively (sha256sum may not exist everywhere)
+if command -v sha256sum >/dev/null 2>&1; then
+  CONFIG_SHA256="$(sha256sum "$CONFIG_FILE" 2>/dev/null | awk '{print $1}' || echo "")"
+elif command -v shasum >/dev/null 2>&1; then
+  CONFIG_SHA256="$(shasum -a 256 "$CONFIG_FILE" 2>/dev/null | awk '{print $1}' || echo "")"
+else
+  CONFIG_SHA256=""
+fi
+readonly CONFIG_SHA256
 
 acquire_repo_lock
 write_registry_entry
@@ -985,13 +1049,12 @@ for i in "${!ISSUES[@]}"; do
   BRANCH="${BRANCHES[$i]}"
   WORKTREE="$WORKTREE_BASE/$BRANCH"
   CURRENT_ISSUE="$ISSUE"
+  CURRENT_ISSUE_INDEX="$i"
+  NEXT_ISSUE_INDEX="$((i + 1))"
   CURRENT_ISSUE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   CURRENT_ISSUE_STARTED_EPOCH="$(date -u +%s)"
   CURRENT_PR=""
   SCOPE_WARNING=""
-
-  # Remove from remaining
-  ISSUES_REMAINING=("${ISSUES_REMAINING[@]:1}")
 
   # ── Control check ─────────────────────────────────────
   CTRL=$(check_control)

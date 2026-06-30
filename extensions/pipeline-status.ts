@@ -31,11 +31,22 @@ type CompletedIssue = {
 };
 
 type PipelineStatus = {
+	schema_version?: number;
 	pipeline_state?: string;
 	pipeline_id?: string;
 	repo?: string;
 	repo_name?: string;
 	pid?: number;
+	// schema_version >= 2
+	resume_supported?: boolean;
+	checkpoint?: unknown;
+	script_file?: string;
+	script_version?: string;
+	config_sha256?: string;
+	current_issue_index?: number | null;
+	next_issue_index?: number | null;
+	next_issue?: number | null;
+	// always present
 	current_issue?: number | null;
 	current_phase?: string;
 	current_phase_started_at?: string | null;
