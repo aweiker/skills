@@ -180,17 +180,21 @@ write_status() {
   else
     paused_reason_json="null"
   fi
+  # checkpoint — only set when paused at between-issues boundary
+  local resume_supported_json
   if [ "$state" = "paused" ]; then
     checkpoint_json="\"between-issues\""
+    resume_supported_json="true"
   else
     checkpoint_json="null"
+    resume_supported_json="false"
   fi
   cat > "$LOG_DIR/status.json.tmp" <<EOF
 {
   "schema_version": 2,
   "pipeline_state": "$state",
   "version": "$VERSION",
-  "resume_supported": false,
+  "resume_supported": $resume_supported_json,
   "checkpoint": $checkpoint_json,
   "pipeline_id": "${PIPELINE_ID:-}",
   "pid": $$,
@@ -238,6 +242,10 @@ write_repo_lock_metadata() {
     echo "issues=${ISSUES[*]}"
     echo "started_at=${PIPELINE_START:-}"
     echo "state=${PIPELINE_LOCK_STATE:-running}"
+    echo "pipeline_id=${PIPELINE_ID:-}"
+    echo "status_file=$LOG_DIR/status.json"
+    echo "log_file=$LOG_DIR/loop.log"
+    echo "control_file=$LOG_DIR/control"
   } > "$LOCK_DIR/metadata"
   echo "$$" > "$LOCK_DIR/pid"
 }
@@ -315,7 +323,7 @@ assert_json_field_notnull "paused_at non-null"      "$JSON" "paused_at"
 assert_json_field "paused_reason=user-requested"    "$JSON" "paused_reason"       "user-requested"
 assert_json_field "next_issue_index=0"              "$JSON" "next_issue_index"    "0"
 assert_json_field "next_issue=10 (ISSUES[0])"       "$JSON" "next_issue"          "10"
-assert_json_field "resume_supported=false"          "$JSON" "resume_supported"    "false"
+assert_json_field "resume_supported=true"           "$JSON" "resume_supported"    "true"
 
 rm -rf "$LOG_DIR" "$LOCK_DIR"
 
@@ -341,6 +349,7 @@ fi
 
 assert_json_field "running: paused_at=null"     "$JSON" "paused_at"     "null"
 assert_json_field "running: paused_reason=null" "$JSON" "paused_reason" "null"
+assert_json_field "running: resume_supported=false" "$JSON" "resume_supported"    "false"
 assert_json_field "running: checkpoint=null"    "$JSON" "checkpoint"    "null"
 
 rm -rf "$LOG_DIR" "$LOCK_DIR"
@@ -531,6 +540,26 @@ if echo "$RUNNING_META" | grep -q "^state=running$"; then
   ok "lock metadata contains state=running"
 else
   fail "lock metadata contains state=running" "got: $RUNNING_META"
+fi
+if echo "$RUNNING_META" | grep -q "^pipeline_id="; then
+  ok "lock metadata contains pipeline_id"
+else
+  fail "lock metadata contains pipeline_id" "got: $RUNNING_META"
+fi
+if echo "$RUNNING_META" | grep -q "^status_file="; then
+  ok "lock metadata contains status_file"
+else
+  fail "lock metadata contains status_file" "got: $RUNNING_META"
+fi
+if echo "$RUNNING_META" | grep -q "^log_file="; then
+  ok "lock metadata contains log_file"
+else
+  fail "lock metadata contains log_file" "got: $RUNNING_META"
+fi
+if echo "$RUNNING_META" | grep -q "^control_file="; then
+  ok "lock metadata contains control_file"
+else
+  fail "lock metadata contains control_file" "got: $RUNNING_META"
 fi
 
 # paused state via update_lock_state

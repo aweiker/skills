@@ -428,6 +428,10 @@ write_repo_lock_metadata() {
     echo "issues=${ISSUES[*]}"
     echo "started_at=${PIPELINE_START:-}"
     echo "state=${PIPELINE_LOCK_STATE:-running}"
+    echo "pipeline_id=${PIPELINE_ID:-}"
+    echo "status_file=$LOG_DIR/status.json"
+    echo "log_file=$LOG_DIR/loop.log"
+    echo "control_file=$LOG_DIR/control"
   } > "$PIPELINE_LOCK_DIR/metadata"
   echo "$$" > "$PIPELINE_LOCK_DIR/pid"
 }
@@ -601,17 +605,20 @@ write_status() {
     paused_reason_json="null"
   fi
   # checkpoint — only set when paused at between-issues boundary
+  local resume_supported_json
   if [ "$state" = "paused" ]; then
     checkpoint_json="\"between-issues\""
+    resume_supported_json="true"
   else
     checkpoint_json="null"
+    resume_supported_json="false"
   fi
   cat > "$LOG_DIR/status.json.tmp" <<EOF
 {
   "schema_version": 2,
   "pipeline_state": "$state",
   "version": "$VERSION",
-  "resume_supported": false,
+  "resume_supported": $resume_supported_json,
   "checkpoint": $checkpoint_json,
   "pipeline_id": "${PIPELINE_ID:-}",
   "pid": $$,
