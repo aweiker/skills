@@ -1,0 +1,12 @@
+{
+  "name": "aweiker-pi-skills",
+  "private": true,
+  "version": "0.1.0",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/*.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

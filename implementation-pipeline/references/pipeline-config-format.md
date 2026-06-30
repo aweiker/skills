@@ -40,6 +40,8 @@ SKIP_SCOPE_GATE=0
 FORCE_ISSUES=""        # e.g. "275,277" to bypass scope gate for those
 NO_MERGE=0
 CONTINUE_ON_FAILURE=0  # default: stop before next issue on any failure/blocker
+ALLOW_CONCURRENT_REPO_PIPELINES=0  # default: refuse another running pipeline for the same repo
+PIPELINE_REGISTRY_ROOT="/tmp/pi-pipeline-status/active"  # status discovery for pi extensions
 LOG_DIR=""             # auto-generated if empty
 IMPL_SKILL="design-first-implementation"
 REVIEW_SKILL="targeted-pr-review"
@@ -65,6 +67,8 @@ should use the provider-neutral field.
 | `BRANCHES` | Auto-generate: `issue-<N>-<slugified-title>` from `gh issue view <N>`; for split tracker checkpoints use `tracker:<child>,<child>` |
 | `MERGE_STRATEGY` | User preference or repo convention (default: squash) |
 | `CONTINUE_ON_FAILURE` | Keep `0` for roadmap/dependent sequences; set `1` only for independent best-effort batches |
+| `ALLOW_CONCURRENT_REPO_PIPELINES` | Keep `0` by default; set `1` only with explicit user approval after verifying same-repo pipelines cannot interfere |
+| `PIPELINE_REGISTRY_ROOT` | Runtime status registry for pi extensions; keep default unless testing |
 | Timeouts | Use defaults unless user has reason to change |
 
 ## Tracker checkpoint entries
@@ -102,19 +106,23 @@ BRANCH="issue-${ISSUE}-${TITLE}"
 
 ```bash
 # 1. Write config
-CONFIG="/tmp/impl-pipeline-$(date +%s)/config.sh"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+REPO_NAME="$(basename "$REPO")"
+SESSION="impl-pipeline-${REPO_NAME}-${TS}"
+CONFIG="/tmp/${SESSION}/config.sh"
 mkdir -p "$(dirname "$CONFIG")"
 cat > "$CONFIG" <<'EOF'
 ... (values above) ...
 EOF
 
-# 2. Launch in tmux
+# 2. Launch in tmux with a unique session name. Do not kill a fixed session name.
+# pipeline.sh enforces same-repo concurrency with a repo-level lock.
 SKILL_DIR="$HOME/.pi/agent/skills/implementation-pipeline"
-tmux new-session -d -s impl-pipeline "$SKILL_DIR/pipeline.sh $CONFIG; exec bash"
+tmux new-session -d -s "$SESSION" "$SKILL_DIR/pipeline.sh $CONFIG; exec bash"
 
 # 3. Report
 echo "Pipeline launched."
-echo "  Session: tmux attach -t impl-pipeline"
+echo "  Session: tmux attach -t $SESSION"
 echo "  Log:     tail -f $(dirname $CONFIG)/loop.log"
 echo "  Status:  cat $(dirname $CONFIG)/status.json"
 echo "  Control: echo 'pause' > $(dirname $CONFIG)/control"
@@ -137,6 +145,7 @@ best-effort batch is desired.
 - Do NOT override timeouts below safety minimums (TIMEOUT_GATE < 30, TIMEOUT_CI < 60)
 - Do NOT set SKIP_SCOPE_GATE=1 without explicit user permission
 - Do NOT set CONTINUE_ON_FAILURE=1 for roadmap-ordered, prerequisite-linked, or otherwise dependent issue sequences
+- Do NOT set ALLOW_CONCURRENT_REPO_PIPELINES=1 without explicit user permission and a concrete non-interference check
 - Do NOT put secrets, tokens, or credentials in the config file
 
 ## Validation
@@ -148,6 +157,7 @@ The script validates the config at startup and exits with clear errors if:
 - MERGE_STRATEGY is invalid
 - Boolean toggles are not `0` or `1`
 - Timeouts are not positive integers
+- Another pipeline is already running for the same canonical repo path and `ALLOW_CONCURRENT_REPO_PIPELINES` is not set
 - `pi` or `gh` commands are not available
 
 ## Controlling a running pipeline
@@ -167,8 +177,11 @@ Write commands to `$LOG_DIR/control`:
 # Live log
 tail -f $LOG_DIR/loop.log
 
-# Machine-readable status
+# Machine-readable status, including current issue elapsed time and completed issue durations
 cat $LOG_DIR/status.json | jq .
+
+# Registry entry consumed by the pi pipeline-status extension
+ls ${PIPELINE_REGISTRY_ROOT:-/tmp/pi-pipeline-status/active}
 
 # Per-agent logs
 ls $LOG_DIR/impl-*.log $LOG_DIR/review-*.log $LOG_DIR/bot-review-*.log

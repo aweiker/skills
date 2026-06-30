@@ -16,16 +16,62 @@ The pipeline writes `$LOG_DIR/status.json` at every phase transition:
   "current_issue": 273,
   "current_phase": "bot-review",
   "current_phase_started_at": "2026-06-25T01:38:22Z",
+  "current_issue_started_at": "2026-06-25T01:10:00Z",
+  "current_issue_elapsed_seconds": 1935,
   "current_agent_pid": 3128779,
   "current_pr": 280,
   "issues_completed": [273],
+  "issues_completed_details": [
+    {
+      "issue": 273,
+      "pr": 280,
+      "started_at": "2026-06-25T01:01:02Z",
+      "completed_at": "2026-06-25T01:09:50Z",
+      "duration_seconds": 528
+    }
+  ],
   "issues_skipped": [],
   "issues_remaining": [274, 275, 276, 277],
   "last_update": "2026-06-25T01:42:15Z"
 }
 ```
 
-Terminal states for `pipeline_state`: `"completed"`, `"aborted"`, `"killed"`.
+Terminal states for `pipeline_state`: `"completed"`, `"blocked"`, `"aborted"`, `"killed"`.
+
+## Active Registry
+
+The pipeline also writes a stable registry entry for UI extensions and other monitors:
+
+```text
+${PIPELINE_REGISTRY_ROOT:-/tmp/pi-pipeline-status/active}/<pipeline-id>.json
+```
+
+The registry entry points to the authoritative status/control artifacts:
+
+```json
+{
+  "schema_version": 1,
+  "id": "impl-pipeline-service-insights-20260630T000000Z",
+  "repo": "/home/ubuntu/repos/service-insights",
+  "repo_name": "service-insights",
+  "pid": 12345,
+  "config_file": "/tmp/impl-pipeline-service-insights/config.sh",
+  "log_dir": "/tmp/impl-pipeline-service-insights",
+  "status_file": "/tmp/impl-pipeline-service-insights/status.json",
+  "log_file": "/tmp/impl-pipeline-service-insights/loop.log",
+  "control_file": "/tmp/impl-pipeline-service-insights/control",
+  "started_at": "2026-06-25T01:01:02Z",
+  "last_update": "2026-06-25T01:01:02Z"
+}
+```
+
+Registry entries are intentionally left in place after terminal states so the pi status extension can
+keep completed or blocked pipelines visible until the user dismisses them. Dismissing a pipeline in
+the extension removes only the registry entry; it does not delete logs, status files, worktrees, or
+PRs.
+
+`status.json` remains the source of truth for phase, issue, PR, and terminal state. The registry is
+only a discovery pointer.
 
 ## Monitoring Protocol (for invoking session)
 
@@ -67,12 +113,6 @@ echo "skip" > "$LOG_DIR/control"
 # Abort the entire pipeline after the current phase finishes
 echo "abort" > "$LOG_DIR/control"
 
-# Skip bot review for the current issue only
-echo "skip-bot" > "$LOG_DIR/control"
-
-# Skip self-review for the current issue only
-echo "skip-review" > "$LOG_DIR/control"
-
 # Pause after the current issue completes (wait for "resume" command)
 echo "pause" > "$LOG_DIR/control"
 
@@ -98,8 +138,8 @@ When the control file isn't fast enough (agent is stuck, producing wrong output,
 # Kill the current agent (default sequential mode treats this as a timeout and stops blocked)
 kill -TERM "$(cat "$LOG_DIR/status.json" | jq -r .current_agent_pid)" 2>/dev/null
 
-# Kill the entire pipeline
-tmux kill-session -t impl-pipeline
+# Kill the entire pipeline. SESSION is the unique tmux session reported at launch.
+tmux kill-session -t "$SESSION"
 
 # Or if running without tmux:
 kill -TERM "$(cat "$LOG_DIR/pipeline.pid")"
@@ -134,7 +174,7 @@ The invoking session should intervene when:
 | Issue took >35 min in implementation phase | Check agent log — may be stuck in a design loop. Consider killing and stopping for diagnosis. |
 | Status shows `blocked` | Inform user. Fix/merge/split the blocked issue before restarting downstream items. |
 | Status shows "skipped" for an issue | Inform user. Ask if this was explicit control-file skip or `CONTINUE_ON_FAILURE=1`. |
-| Bot review is on round 4+ | Check progress log. If quality is declining, write `skip-bot` to control file. |
+| Bot review is on round 4+ | Check progress log. If quality is declining, kill the bot agent PID; the pipeline will treat it as a timeout and continue to merge checks. |
 | CI failure after merge attempt | Report to user — may need manual rebase. |
 | Multiple consecutive skips | Only expected with `CONTINUE_ON_FAILURE=1`; pause and report because the batch may be misconfigured. |
 | Pipeline completes with all issues merged | Report success summary. Clean up worktrees if desired. |
@@ -150,7 +190,10 @@ is **failed** when the script or its current agent has exited without writing a 
 
 ```bash
 # 1. Is the pipeline script itself alive?
-tmux has-session -t impl-pipeline 2>/dev/null && echo "pipeline: alive" || echo "pipeline: DEAD"
+# Prefer the launch-reported SESSION. If unknown, list unique pipeline sessions.
+tmux has-session -t "$SESSION" 2>/dev/null && echo "pipeline: alive" || echo "pipeline: DEAD"
+tmux list-sessions 2>/dev/null | grep 'impl-pipeline-' || true
+pgrep -af 'implementation-pipeline/pipeline.sh' || true
 
 # 2. What does status.json say? (stale last_update = hung)
 cat "$LOG_DIR/status.json" | jq '{state: .pipeline_state, phase: .current_phase, last_update: .last_update, agent_pid: .current_agent_pid}'
@@ -193,20 +236,22 @@ After a pipeline crashes, is killed, or leaves issues in a bad state, clean up i
 ### 1. Kill orphan processes
 
 ```bash
-# Find any pi processes from this pipeline
-pgrep -af "impl-pipeline|impl-[0-9]|review-[0-9]|ai-pr-review-loop|ghe-pr-review-loop" | grep -v grep
+# Find any pi/processes from this pipeline. Prefer matching the unique LOG_DIR or SESSION.
+pgrep -af "$(basename "$LOG_DIR")|$SESSION|impl-[0-9]|review-[0-9]|ai-pr-review-loop|ghe-pr-review-loop" | grep -v grep
 
-# Kill them all
-pkill -f "impl-pipeline-<TIMESTAMP>" 2>/dev/null || true
+# Kill processes for this pipeline only.
+pkill -f "$(basename "$LOG_DIR")" 2>/dev/null || true
+[ -n "${SESSION:-}" ] && pkill -f "$SESSION" 2>/dev/null || true
 
-# Verify nothing remains
-pgrep -af "impl-pipeline" | grep -v grep && echo "WARNING: orphans remain" || echo "clean"
+# Verify no pipeline scripts remain for the same repo before restarting.
+pgrep -af 'implementation-pipeline/pipeline.sh' | grep -v grep || echo "no pipeline scripts running"
+find /tmp/pi-pipeline-locks -maxdepth 2 -type f -print -exec sh -c 'echo --- $1; cat "$1"' _ {} \; 2>/dev/null || true
 ```
 
 ### 2. Kill the tmux session (if still alive)
 
 ```bash
-tmux kill-session -t impl-pipeline 2>/dev/null || true
+tmux kill-session -t "$SESSION" 2>/dev/null || true
 ```
 
 ### 3. Assess worktree and PR state
@@ -338,9 +383,8 @@ for its full timeout (default 40 min) without any findings appearing.
 **Detection**: Bot review agent's progress log (`/tmp/<bot-session>-progress.log`) shows
 "waiting for bot" for 10+ minutes with no new inline comments on the PR.
 
-**Fix**: Write `skip-bot` to the control file for subsequent issues. For the current stuck
-issue, kill the bot agent PID — the pipeline will treat it as a timeout and attempt merge.
-This is safe: no bot findings means nothing to fix.
+**Fix**: Kill the bot agent PID — the pipeline will treat it as a timeout and attempt merge.
+This is safe when no bot findings appeared because there is nothing to fix.
 
 ### PR was merged or closed externally
 
@@ -448,12 +492,13 @@ echo "skip" > "$LOG_DIR/control.tmp" && mv "$LOG_DIR/control.tmp" "$LOG_DIR/cont
 If the server restarts or tmux is killed, the pipeline script dies but child `pi` agents
 may survive briefly (they're `nohup`'d).
 
-**Detection**: `tmux has-session -t impl-pipeline` returns error. But `pgrep -af "impl-"`
+**Detection**: `tmux has-session -t "$SESSION"` returns error. But `pgrep -af "impl-"`
 may show orphans.
 
-**Fix**: Follow full cleanup procedure. The EXIT trap in the pipeline script won't fire if
-tmux is killed with SIGKILL — orphan agents must be found and killed manually with
-`pkill -f "impl-pipeline-<TIMESTAMP>"`.
+**Fix**: Follow full cleanup procedure. The EXIT trap normally releases the repo lock, but it
+cannot run if the pipeline process is killed with SIGKILL or the host crashes. Orphan agents must be
+found and killed manually, and stale `/tmp/pi-pipeline-locks/*` entries should be inspected before
+removal.
 
 ### Scope gate is too conservative (skipping valid issues)
 
