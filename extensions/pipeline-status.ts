@@ -313,9 +313,85 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 		return lines;
 	}
 
+	async function resumePipeline(ctx: ExtensionContextLike, pipeline: PipelineView): Promise<void> {
+		const action = planResumeAction({
+			pipelineId: pipeline.id,
+			state: pipeline.state,
+			pidAlive: pipeline.pidAlive,
+			controlFile: pipeline.controlFile,
+			statusFile: pipeline.statusFile,
+			status: pipeline.status,
+		});
+
+		if (action.type === "refuse") {
+			notify(ctx, action.message + (action.manualCommand ? `\nManual: ${action.manualCommand}` : ""), "error");
+			return;
+		}
+
+		if (action.type === "control-file-write") {
+			// Live PID: use existing control-file write path.
+			const hadPending = await fileHasContent(action.controlFile);
+			try {
+				await writeFile(action.controlFile, "resume\n", "utf8");
+				pendingCommands.set(pipeline.id, "resume");
+				setTimeout(() => pendingCommands.delete(pipeline.id), pollMs * 2).unref?.();
+				notify(ctx, `resume command sent to pipeline ${pipeline.id}.${hadPending ? " Previous control command may not have been consumed yet." : ""}`, hadPending ? "warning" : "info");
+				await refresh(ctx);
+			} catch (error) {
+				notify(ctx, `Failed to write pipeline control command: ${String(error)}`, "error");
+			}
+			return;
+		}
+
+		// action.type === "tmux-restart"
+		// Dead PID: attempt restart only after precondition checks.
+		const { sessionName, shellCmd, scriptFile, statusFile } = action;
+
+		// Check tmux availability.
+		const whichResult = await pi.exec("which", ["tmux"], { timeout: 3000 });
+		if (whichResult.code !== 0) {
+			const manual = manualResumeCommand(scriptFile, statusFile);
+			notify(
+				ctx,
+				`Pipeline ${pipeline.id}: tmux is not available — cannot auto-restart.\nManual: ${manual}`,
+				"warning",
+			);
+			return;
+		}
+
+		// Check if session already exists.
+		const hasSession = await pi.exec("tmux", ["has-session", "-t", sessionName], { timeout: 3000 });
+		if (hasSession.code === 0) {
+			notify(ctx, `Pipeline ${pipeline.id}: a resume session is already running.\nAttach: tmux attach -t ${sessionName}`, "info");
+			return;
+		}
+
+		// Spawn detached tmux session.
+		const spawnResult = await pi.exec("tmux", ["new-session", "-d", "-s", sessionName, shellCmd], { timeout: 5000 });
+		if (spawnResult.code !== 0) {
+			const manual = manualResumeCommand(scriptFile, statusFile);
+			notify(
+				ctx,
+				`Pipeline ${pipeline.id}: failed to start tmux session (${spawnResult.stderr.trim() || "unknown error"}).\nManual: ${manual}`,
+				"error",
+			);
+			return;
+		}
+
+		pendingCommands.set(pipeline.id, "resume");
+		setTimeout(() => pendingCommands.delete(pipeline.id), pollMs * 2).unref?.();
+		notify(ctx, `Pipeline ${pipeline.id}: restart launched.\nAttach: tmux attach -t ${sessionName}`, "info");
+		await refresh(ctx);
+	}
+
 	async function steer(ctx: ExtensionContextLike, command: "pause" | "resume" | "skip" | "abort", id?: string): Promise<void> {
 		const pipeline = await selectPipeline(ctx, id, { allowTerminal: false });
 		if (!pipeline) return;
+
+		if (command === "resume") {
+			await resumePipeline(ctx, pipeline);
+			return;
+		}
 
 		if (command === "skip" || command === "abort") {
 			if (!ctx.hasUI) {
@@ -485,7 +561,7 @@ function isPidAlive(pid: number): boolean {
 	}
 }
 
-function classifyState(rawState: string | undefined, pidAlive: boolean, hasStatus: boolean): string {
+export function classifyState(rawState: string | undefined, pidAlive: boolean, hasStatus: boolean): string {
 	if (!hasStatus) return pidAlive ? "starting" : "crashed";
 	const state = rawState || "unknown";
 	// paused is intentionally alive — do not classify as crashed even if the poll window is wide
@@ -609,4 +685,111 @@ function notify(ctx: ExtensionContextLike, message: string, level: NotifyLevel):
 
 function color(theme: { fg: (color: string, text: string) => string } | undefined, colorName: string, text: string): string {
 	return theme ? theme.fg(colorName, text) : text;
+}
+
+// ─── Exported pure planner and helpers (used by tests and resume logic) ──────
+
+export type ResumeAction =
+	| { type: "control-file-write"; controlFile: string }
+	| { type: "tmux-restart"; sessionName: string; shellCmd: string; scriptFile: string; statusFile: string }
+	| { type: "refuse"; message: string; manualCommand?: string };
+
+export type ResumePlanInput = {
+	pipelineId: string;
+	state: string;
+	pidAlive: boolean;
+	controlFile: string;
+	statusFile: string;
+	status?: PipelineStatus;
+};
+
+/**
+ * Pure, synchronous planner for /pipeline-resume decisions.
+ * No I/O, no process.kill, no pi.exec, no tmux — all side-effecting
+ * operations remain in resumePipeline().
+ */
+export function planResumeAction(input: ResumePlanInput): ResumeAction {
+	const { pipelineId, state, pidAlive, controlFile, statusFile, status } = input;
+
+	if (state !== "paused") {
+		return { type: "refuse", message: `Pipeline ${pipelineId} is not paused (state: ${state}). Only paused pipelines can be resumed.` };
+	}
+
+	if (pidAlive) {
+		// Live PID: safety-harden controlFile before any write.
+		if (!controlFile || !controlFile.startsWith("/")) {
+			return { type: "refuse", message: `Pipeline ${pipelineId}: controlFile is missing or not absolute (got: ${controlFile || "(none)"}).` };
+		}
+		return { type: "control-file-write", controlFile };
+	}
+
+	// Dead PID: full precondition checks required for restart.
+	if (!status) {
+		return { type: "refuse", message: `Pipeline ${pipelineId}: cannot restart — status file is missing or unreadable.` };
+	}
+	if (status.schema_version !== 2) {
+		const manual = manualResumeCommand(status.script_file, statusFile);
+		return {
+			type: "refuse",
+			message: `Pipeline ${pipelineId}: schema_version is not 2 (got: ${status.schema_version ?? "(none)"}) — v1/unsupported schema is monitor-only; cannot auto-restart.`,
+			...(manual ? { manualCommand: manual } : {}),
+		};
+	}
+	if (status.resume_supported !== true) {
+		const manual = manualResumeCommand(status.script_file, statusFile);
+		return {
+			type: "refuse",
+			message: `Pipeline ${pipelineId}: resume_supported is not true — this pipeline cannot be automatically restarted.`,
+			...(manual ? { manualCommand: manual } : {}),
+		};
+	}
+	if (status.checkpoint !== "between-issues") {
+		const manual = manualResumeCommand(status.script_file, statusFile);
+		return {
+			type: "refuse",
+			message: `Pipeline ${pipelineId}: checkpoint is ${JSON.stringify(status.checkpoint ?? null)} — only 'between-issues' is supported for auto-restart.`,
+			...(manual ? { manualCommand: manual } : {}),
+		};
+	}
+	const scriptFile = status.script_file;
+	if (!scriptFile || !scriptFile.startsWith("/")) {
+		return { type: "refuse", message: `Pipeline ${pipelineId}: script_file is missing or not absolute (got: ${scriptFile ?? "(none)"}).` };
+	}
+	if (!statusFile || !statusFile.startsWith("/")) {
+		return { type: "refuse", message: `Pipeline ${pipelineId}: statusFile path is missing or not absolute (got: ${statusFile ?? "(none)"}).` };
+	}
+
+	const sessionName = resumeSessionName(pipelineId);
+	const shellCmd = `${shellQuote(scriptFile)} --resume ${shellQuote(statusFile)}; exec bash`;
+	return { type: "tmux-restart", sessionName, shellCmd, scriptFile, statusFile };
+}
+
+// ─── Exported pure helpers ────────────────────────────────────────────────────
+
+/**
+ * Shell-quote a single path argument so it is safe to pass inside a
+ * tmux command string that the shell will interpret.  Uses single-quote
+ * wrapping with embedded single-quote escaping (the '\'' pattern).
+ */
+export function shellQuote(arg: string): string {
+	const escapedSingleQuote = "'\\''";
+	return "'" + arg.replace(/'/g, escapedSingleQuote) + "'";
+}
+
+/**
+ * Deterministic, bounded tmux session name for a pipeline resume.
+ * Sanitizes the id to only alnum/dash chars and caps at 40 chars.
+ */
+export function resumeSessionName(pipelineId: string): string {
+	const safe = pipelineId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40);
+	return `resume-${safe}`;
+}
+
+/**
+ * Human-readable manual resume command string shown in error/warning
+ * notifications when automatic restart is not possible.
+ */
+export function manualResumeCommand(scriptFile: string | undefined, statusFile: string | undefined): string {
+	if (!scriptFile || !statusFile) return "";
+	return `${shellQuote(scriptFile)} --resume ${shellQuote(statusFile)}`;
 }

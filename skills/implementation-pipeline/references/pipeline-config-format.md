@@ -104,6 +104,14 @@ BRANCH="issue-${ISSUE}-${TITLE}"
 
 ## Launching
 
+Normal pipeline execution is launched from a config file as shown below. This is the only
+launch path the agent should use. A separate validated restart path exists for paused pipelines:
+`pipeline.sh --resume <status.json>` may be used when the pipeline is in a supported paused v2
+`between-issues` checkpoint state and the original process is dead. The extension handles this
+path via `/pipeline-resume`; see
+`skills/implementation-pipeline/references/monitoring-and-steering.md` for the full preconditions
+and semantics. Do not pass `--resume` to launch a new pipeline; it is strictly a restart path.
+
 ```bash
 # 1. Write config
 TS="$(date -u +%Y%m%dT%H%M%SZ)"

@@ -21,7 +21,7 @@ in `package.json`.
 Install from git:
 
 ```bash
-pi install git:git@github.com:aweiker/skills.git@v0.1.0
+pi install git:git@github.com:aweiker/skills.git@v0.2.0
 ```
 
 For local development on this machine, the checkout can be installed directly:
@@ -88,7 +88,7 @@ Commands:
 | `/pipeline-status` | Refresh/show current repo pipeline status. |
 | `/pipeline-log [id]` | Open a live tail view of the pipeline log. |
 | `/pipeline-pause [id]` | Request pause between phases. |
-| `/pipeline-resume [id]` | Resume a paused pipeline. |
+| `/pipeline-resume [id]` | Resume a paused pipeline. If the pipeline process is alive, writes `resume` to the control file. If the process is dead and the status is a supported paused v2 between-issues checkpoint, launches a detached tmux restart session running `pipeline.sh --resume <status_file>`. Refuses if the pipeline is not paused or restart preconditions are not met. |
 | `/pipeline-skip [id]` | Request skip of current issue; requires confirmation. |
 | `/pipeline-abort [id]` | Request abort of the pipeline; requires confirmation. |
 | `/pipeline-dismiss [id]` | Remove a terminal pipeline from the status widget. |
@@ -115,11 +115,13 @@ and a discovery pointer to:
 ${PIPELINE_REGISTRY_ROOT:-/tmp/pi-pipeline-status/active}/<pipeline-id>.json
 ```
 
-Completed or blocked pipelines intentionally remain in the registry until dismissed so the extension
-can keep the final result visible.
+`status.json` is the source of truth for phase, issue, PR, and terminal state. The extension must
+not infer state from logs or GitHub API calls — it reads `status.json` directly. Terminal registry
+entries remain in the active directory until dismissed; `/pipeline-dismiss` removes only the
+registry pointer, not logs, status files, worktrees, or PRs.
 
-See `skills/implementation-pipeline/references/monitoring-and-steering.md` for the full monitoring
-and control protocol.
+See `skills/implementation-pipeline/references/monitoring-and-steering.md` for the full monitoring,
+control, and pause/resume protocol including checkpoint semantics and dead-process restart.
 
 ## Plans
 
@@ -139,6 +141,7 @@ bash tests/pipeline/test-durable-pause.sh
 bash tests/pipeline/test-resume-validation.sh
 bash tests/pipeline/test-resume-supported.sh
 bash tests/pipeline/test-resume-entrypoint.sh
+node tests/pipeline/test-pipeline-resume-extension.mjs
 shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh tests/pipeline/test-resume-validation.sh tests/pipeline/test-resume-supported.sh tests/pipeline/test-resume-entrypoint.sh
 ```
 
