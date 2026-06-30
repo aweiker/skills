@@ -159,6 +159,11 @@ validate_config() {
   return 0
 }
 
+# Guard for library/test mode (early): when PIPELINE_LIB_MODE=1, skip config
+# loading and execution entirely so test scripts can define stubs and then
+# source this file to access the resume validation helpers.
+if [ "${PIPELINE_LIB_MODE:-0}" != "1" ]; then
+
 # ── Load config ──────────────────────────────────────────────────────────────
 
 if [ $# -lt 1 ] || [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
@@ -246,6 +251,8 @@ mkdir -p "$LOG_DIR"
 if ! validate_config; then
   exit 1
 fi
+
+fi  # end PIPELINE_LIB_MODE guard (load-config block)
 
 # ── Process management ───────────────────────────────────────────────────────
 
@@ -449,7 +456,9 @@ release_repo_lock() {
 release_repo_lock_on_exit() {
   release_repo_lock
 }
-trap release_repo_lock_on_exit EXIT
+if [ "${PIPELINE_LIB_MODE:-0}" != "1" ]; then
+  trap release_repo_lock_on_exit EXIT
+fi
 
 pipeline_id_from_log_dir() {
   local base safe_base
@@ -1035,7 +1044,258 @@ Inputs:
 EOF
 }
 
+# ── Resume validation helpers ──────────────────────────────────────────────
+# These helpers are used by a future --resume entrypoint. They are pure
+# functions with no side effects on the live pipeline; they require no git
+# repo, no gh CLI, and no pi agent.
+
+# json_get <file> <jq-expr>
+# Runs jq on <file> and prints the result (without outer quotes for strings).
+# Returns non-zero if jq fails or the key is missing/null.
+json_get() {
+  local file="$1" expr="$2"
+  jq -e -r "$expr" "$file" 2>/dev/null
+}
+
+# compute_file_sha256 <file>
+# Prints the SHA-256 hex digest of <file>. Uses sha256sum or shasum -a 256.
+compute_file_sha256() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" 2>/dev/null | awk '{print $1}'
+  else
+    echo ""
+    return 1
+  fi
+}
+
+# pid_is_alive <pid>
+# Returns 0 if the process is alive, non-zero otherwise.
+# Treats empty/null/0 as not alive.
+pid_is_alive() {
+  local pid="$1"
+  case "$pid" in
+    "" | null | 0) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+# validate_resume_status <status-file>
+#
+# Validates that <status-file> is eligible for dead-process resume from a
+# paused between-issues checkpoint. On success, exports the following globals:
+#   RESUME_STATUS_FILE, RESUME_CONFIG_FILE, RESUME_PIPELINE_ID,
+#   RESUME_NEXT_ISSUE_INDEX, RESUME_ISSUES_TOTAL_CSV,
+#   RESUME_ISSUES_COMPLETED_CSV, RESUME_ISSUES_SKIPPED_CSV
+#
+# On any validation failure: prints a clear error to stderr, returns non-zero,
+# and does NOT modify the status file.
+validate_resume_status() {
+  local status_file="${1:-}"
+  if [ -z "$status_file" ]; then
+    echo "ERROR: status file path is required for resume validation" >&2
+    return 1
+  fi
+  local schema_version pipeline_state checkpoint resume_supported
+  local pipeline_id config_file config_sha256_stored config_sha256_actual
+  local issues_total_csv issues_completed_csv issues_skipped_csv
+  local next_issue_index agent_pid
+  local issues_total_count issues_completed_count
+  local sourced_issues_csv
+  local issue
+
+  # 1. jq must be available.
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: jq is required for resume validation but was not found in PATH" >&2
+    return 1
+  fi
+
+  # 2. Status file must exist and be valid JSON.
+  if [ ! -f "$status_file" ]; then
+    echo "ERROR: status file not found: $status_file" >&2
+    return 1
+  fi
+  if ! jq empty "$status_file" 2>/dev/null; then
+    echo "ERROR: status file is not valid JSON: $status_file" >&2
+    return 1
+  fi
+
+  # 3. schema_version == 2
+  schema_version=$(json_get "$status_file" '.schema_version // empty') || true
+  if [ "$schema_version" != "2" ]; then
+    echo "ERROR: unsupported schema_version '$schema_version' (required: 2)" >&2
+    return 1
+  fi
+
+  # 4. pipeline_state == paused
+  pipeline_state=$(json_get "$status_file" '.pipeline_state // empty') || true
+  if [ "$pipeline_state" != "paused" ]; then
+    echo "ERROR: pipeline_state is '$pipeline_state'; only 'paused' pipelines can be resumed" >&2
+    return 1
+  fi
+
+  # 5. checkpoint == between-issues
+  checkpoint=$(json_get "$status_file" '.checkpoint // empty') || true
+  if [ "$checkpoint" != "between-issues" ]; then
+    echo "ERROR: checkpoint is '$checkpoint'; only 'between-issues' checkpoint supports dead-process resume" >&2
+    return 1
+  fi
+
+  # 6. resume_supported == true
+  resume_supported=$(json_get "$status_file" '.resume_supported // empty') || true
+  if [ "$resume_supported" != "true" ]; then
+    echo "ERROR: resume_supported is '$resume_supported'; this status was written by a runtime that does not support dead-process resume" >&2
+    return 1
+  fi
+
+  # 7. Required fields must exist and be non-empty/non-null.
+  local field val
+  for field in pipeline_id config_file config_sha256 next_issue_index; do
+    val=$(json_get "$status_file" ".${field} // empty" 2>/dev/null) || val=""
+    if [ -z "$val" ]; then
+      echo "ERROR: required field '$field' is missing or null in status file" >&2
+      return 1
+    fi
+  done
+  # issues_total, issues_completed, issues_skipped must be arrays (can be empty for completed/skipped)
+  for field in issues_total issues_completed issues_skipped; do
+    if ! jq -e ".${field} | arrays" "$status_file" >/dev/null 2>&1; then
+      echo "ERROR: required field '$field' is missing or not an array in status file" >&2
+      return 1
+    fi
+  done
+  # issues_total must have at least one element
+  if ! jq -e '.issues_total | length > 0' "$status_file" >/dev/null 2>&1; then
+    echo "ERROR: issues_total is empty; nothing to resume" >&2
+    return 1
+  fi
+  # All issue arrays must contain numeric issue identifiers, matching pipeline output.
+  if ! jq -e '(.issues_total + .issues_completed + .issues_skipped) | all(type == "number")' "$status_file" >/dev/null 2>&1; then
+    echo "ERROR: issue arrays must contain numeric issue identifiers" >&2
+    return 1
+  fi
+
+  # Extract values for subsequent checks.
+  pipeline_id=$(json_get "$status_file" '.pipeline_id')
+  config_file=$(json_get "$status_file" '.config_file')
+  config_sha256_stored=$(json_get "$status_file" '.config_sha256')
+  next_issue_index=$(json_get "$status_file" '.next_issue_index')
+  issues_total_csv=$(json_get "$status_file" '[.issues_total[]] | join(",")')
+  issues_completed_csv=$(json_get "$status_file" 'if .issues_completed | length > 0 then [.issues_completed[]] | join(",") else "" end')
+  issues_skipped_csv=$(json_get "$status_file" 'if .issues_skipped | length > 0 then [.issues_skipped[]] | join(",") else "" end')
+  issues_total_count=$(json_get "$status_file" '.issues_total | length')
+  issues_completed_count=$(json_get "$status_file" '.issues_completed | length')
+  agent_pid=$(json_get "$status_file" '.current_agent_pid // empty' 2>/dev/null) || agent_pid=""
+
+  # 8. config_file must exist.
+  if [ ! -f "$config_file" ]; then
+    echo "ERROR: config file from status does not exist: $config_file" >&2
+    return 1
+  fi
+
+  # 9. Current config sha256 must match stored config_sha256.
+  config_sha256_actual=$(compute_file_sha256 "$config_file") || true
+  if [ -z "$config_sha256_actual" ]; then
+    echo "ERROR: unable to compute sha256 for config file: $config_file" >&2
+    return 1
+  fi
+  if [ "$config_sha256_actual" != "$config_sha256_stored" ]; then
+    echo "ERROR: config file has changed since pipeline was paused (sha256 mismatch); update config or use original" >&2
+    return 1
+  fi
+
+  # 10. current_agent_pid must be null/empty/dead.
+  if pid_is_alive "$agent_pid"; then
+    echo "ERROR: current_agent_pid $agent_pid is still alive; pipeline process may still be running — use the control file for live resume" >&2
+    return 1
+  fi
+
+  # 11. Source config and verify issues_total matches ISSUES.
+  local sourced_issues_total_count
+  sourced_issues_csv=""
+  # Source config in a child process to read ISSUES without affecting the
+  # parent shell. Use bash -c so ShellCheck does not track the ISSUES
+  # assignment as a modification of the outer variable.
+  sourced_issues_csv=$(bash -c '
+    set -uo pipefail
+    ISSUES=()
+    BRANCHES=()
+    source "$1"
+    printf "%s\n" "${ISSUES[@]+${ISSUES[*]}}"
+  ' _ "$config_file" 2>/dev/null || true)
+  # Build space-separated from comma-separated for comparison
+  sourced_issues_total_count=$(echo "$sourced_issues_csv" | tr ' ' '\n' | grep -c '[^[:space:]]' 2>/dev/null || echo "0")
+  if [ "$sourced_issues_total_count" != "$issues_total_count" ]; then
+    echo "ERROR: ISSUES count from config ($sourced_issues_total_count) does not match issues_total count in status ($issues_total_count)" >&2
+    return 1
+  fi
+  # Compare each element in order.
+  local idx=0
+  local sourced_arr
+  read -ra sourced_arr <<< "$sourced_issues_csv" 2>/dev/null || sourced_arr=()
+  local total_arr
+  readarray -t total_arr < <(json_get "$status_file" '.issues_total[]')
+  for idx in "${!total_arr[@]}"; do
+    if [ "${sourced_arr[$idx]:-}" != "${total_arr[$idx]:-}" ]; then
+      echo "ERROR: ISSUES[$idx]=${sourced_arr[$idx]:-} from config does not match issues_total[$idx]=${total_arr[$idx]:-} from status" >&2
+      return 1
+    fi
+  done
+
+  # 12. next_issue_index must be numeric and between 0 and len(issues_total), inclusive.
+  if ! [[ "$next_issue_index" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: next_issue_index '$next_issue_index' must be a non-negative integer" >&2
+    return 1
+  fi
+  if [ "$next_issue_index" -lt 0 ] || [ "$next_issue_index" -gt "$issues_total_count" ]; then
+    echo "ERROR: next_issue_index $next_issue_index is out of range [0, $issues_total_count]" >&2
+    return 1
+  fi
+
+  # 13. next_issue_index >= len(issues_completed)
+  if [ "$next_issue_index" -lt "$issues_completed_count" ]; then
+    echo "ERROR: next_issue_index $next_issue_index is less than issues_completed count $issues_completed_count; status is inconsistent" >&2
+    return 1
+  fi
+
+  # 14. issues_completed must only contain issues from issues_total.
+  while IFS= read -r issue; do
+    [ -z "$issue" ] && continue
+    if ! jq -e --argjson v "$issue" '.issues_total | map(tostring) | index($v | tostring) != null' "$status_file" >/dev/null 2>&1; then
+      echo "ERROR: issues_completed contains issue $issue which is not in issues_total" >&2
+      return 1
+    fi
+  done < <(json_get "$status_file" '.issues_completed[]' 2>/dev/null || true)
+
+  # 15. issues_skipped must only contain issues from issues_total.
+  while IFS= read -r issue; do
+    [ -z "$issue" ] && continue
+    if ! jq -e --argjson v "$issue" '.issues_total | map(tostring) | index($v | tostring) != null' "$status_file" >/dev/null 2>&1; then
+      echo "ERROR: issues_skipped contains issue $issue which is not in issues_total" >&2
+      return 1
+    fi
+  done < <(json_get "$status_file" '.issues_skipped[]' 2>/dev/null || true)
+
+  # All checks passed — populate exported globals for future use by --resume entrypoint.
+  RESUME_STATUS_FILE="$status_file"
+  RESUME_CONFIG_FILE="$config_file"
+  RESUME_PIPELINE_ID="$pipeline_id"
+  RESUME_NEXT_ISSUE_INDEX="$next_issue_index"
+  RESUME_ISSUES_TOTAL_CSV="$issues_total_csv"
+  RESUME_ISSUES_COMPLETED_CSV="$issues_completed_csv"
+  RESUME_ISSUES_SKIPPED_CSV="$issues_skipped_csv"
+  export RESUME_STATUS_FILE RESUME_CONFIG_FILE RESUME_PIPELINE_ID
+  export RESUME_NEXT_ISSUE_INDEX RESUME_ISSUES_TOTAL_CSV
+  export RESUME_ISSUES_COMPLETED_CSV RESUME_ISSUES_SKIPPED_CSV
+  return 0
+}
+
 # ── Pipeline state ───────────────────────────────────────────────────────────
+
+# In library/test mode the execution body is skipped; only functions are loaded.
+if [ "${PIPELINE_LIB_MODE:-0}" != "1" ]; then
 
 PIPELINE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 PIPELINE_ID="$(pipeline_id_from_log_dir)"
@@ -1505,3 +1765,5 @@ for issue in "${ISSUES_SKIPPED[@]:-}"; do
 done
 log ""
 log "${#ISSUES_COMPLETED[@]} merged, ${#ISSUES_SKIPPED[@]} skipped."
+
+fi  # end PIPELINE_LIB_MODE guard (pipeline-state and main-loop block)

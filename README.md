@@ -136,7 +136,8 @@ bash -n skills/implementation-pipeline/pipeline.sh
 node --experimental-strip-types --check extensions/pipeline-status.ts
 bash tests/pipeline/test-cursor-status.sh
 bash tests/pipeline/test-durable-pause.sh
-shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh
+bash tests/pipeline/test-resume-validation.sh
+shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh tests/pipeline/test-resume-validation.sh
 ```
 
 Check package visibility:
