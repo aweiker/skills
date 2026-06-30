@@ -628,6 +628,178 @@ process.stdout.write(JSON.stringify(classifyState(${JSON.stringify(rawState)}, $
   );
 }
 
+// ── Phase 5H: Static checks for resume_error / formatResumeError ──────────────
+console.log("\n=== Static source checks — Phase 5H (resume_error / formatResumeError) ===");
+
+assertIncludes(
+  "source: resume_error?: unknown field in PipelineStatus",
+  src,
+  "resume_error?: unknown"
+);
+assertIncludes(
+  "source: export function formatResumeError present",
+  src,
+  "export function formatResumeError"
+);
+assertIncludes(
+  "source: formatResumeError called with pipeline.status?.resume_error",
+  src,
+  "formatResumeError(pipeline.status?.resume_error)"
+);
+assertIncludes(
+  "source: pipeline.state === blocked guard in widgetLines",
+  src,
+  'pipeline.state === "blocked"'
+);
+// footerText must not reference resume_error — extract function body heuristically
+{
+  const ftStart = src.indexOf("function footerText(");
+  const ftEnd = src.indexOf("\n\tfunction ", ftStart + 1);
+  const footerBody = ftEnd > ftStart ? src.slice(ftStart, ftEnd) : src.slice(ftStart, ftStart + 3000);
+  assertNotIncludes(
+    "footerText body: does not reference resume_error",
+    footerBody,
+    "resume_error"
+  );
+}
+
+// ── Phase 5H: formatResumeError pure helper tests ───────────────────────────
+console.log("\n=== formatResumeError pure helper ===");
+
+function callFormatResumeError(value, max) {
+  const maxArg = max === undefined ? "" : `, ${JSON.stringify(max)}`;
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module"],
+    {
+      input: `
+import { formatResumeError } from ${JSON.stringify(extFile)};
+const value = ${JSON.stringify(value)};
+process.stdout.write(JSON.stringify(formatResumeError(value${maxArg})));
+`,
+      encoding: "utf8",
+      timeout: 10000,
+    }
+  );
+  return JSON.parse(result);
+}
+
+function callFormatResumeErrorRaw(valueExpr, max) {
+  const maxArg = max === undefined ? "" : `, ${JSON.stringify(max)}`;
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module"],
+    {
+      input: `
+import { formatResumeError } from ${JSON.stringify(extFile)};
+const value = ${valueExpr};
+process.stdout.write(JSON.stringify(formatResumeError(value${maxArg})));
+`,
+      encoding: "utf8",
+      timeout: 10000,
+    }
+  );
+  return JSON.parse(result);
+}
+
+// normal string unchanged
+{
+  const r = callFormatResumeError("config hash mismatch");
+  assertEqual("normal string: unchanged", "config hash mismatch", r);
+}
+
+// trims leading/trailing whitespace
+{
+  const r = callFormatResumeError("  trimmed  ");
+  assertEqual("string with surrounding spaces: trimmed", "trimmed", r);
+}
+
+// newline, tab, CR collapsed to spaces then collapsed+trimmed
+{
+  const r = callFormatResumeError("line1\nline2\ttab\rcarriage");
+  assertEqual("newline/tab/CR: collapsed to single spaces", "line1 line2 tab carriage", r);
+}
+
+// ANSI escape: \x1b (0x1B, within \x00-\x1F) is control -> space; multiple controls collapse
+{
+  const r = callFormatResumeError("\x1b[31mred\x1b[0m");
+  assertEqual("ANSI \\x1b[31mred\\x1b[0m => [31mred [0m", "[31mred [0m", r);
+}
+
+// NUL/control-only -> null
+{
+  const r = callFormatResumeError("\x00\x01\x02");
+  assertEqual("control-only string: null", null, r);
+}
+
+// non-string: undefined -> null
+{ const r = callFormatResumeErrorRaw("undefined"); assertEqual("undefined -> null", null, r); }
+
+// non-string: null -> null
+{ const r = callFormatResumeErrorRaw("null"); assertEqual("null -> null", null, r); }
+
+// non-string: number -> null
+{ const r = callFormatResumeErrorRaw("42"); assertEqual("number 42 -> null", null, r); }
+
+// non-string: boolean -> null
+{ const r = callFormatResumeErrorRaw("true"); assertEqual("boolean true -> null", null, r); }
+
+// non-string: object -> null
+{ const r = callFormatResumeErrorRaw('({msg: "err"})'); assertEqual("object -> null", null, r); }
+
+// non-string: array -> null
+{ const r = callFormatResumeErrorRaw('["err"]'); assertEqual("array -> null", null, r); }
+
+// empty string -> null
+{
+  const r = callFormatResumeError("");
+  assertEqual("empty string -> null", null, r);
+}
+
+// whitespace-only -> null
+{
+  const r = callFormatResumeError("   ");
+  assertEqual("whitespace-only string -> null", null, r);
+}
+
+// exactly 160 chars: unchanged
+{
+  const s = "x".repeat(160);
+  const r = callFormatResumeError(s);
+  assertEqual("exactly 160 chars: unchanged (length=160)", 160, r !== null ? r.length : null);
+  assertEqual("exactly 160 chars: no ellipsis", s, r);
+}
+
+// 200 chars: truncated to 159 + ellipsis (total 160)
+{
+  const s = "a".repeat(200);
+  const r = callFormatResumeError(s);
+  if (r !== null) {
+    assertEqual("200 chars: length=160 (159+ellipsis)", 160, r.length);
+    assertEqual("200 chars: ends with ellipsis", "\u2026", r.slice(-1));
+  } else {
+    fail("200 chars truncation: result should not be null");
+  }
+}
+
+// custom max=2: 'abc' -> 'a…'
+{
+  const r = callFormatResumeError("abc", 2);
+  assertEqual("custom max=2: 'abc' -> 'a\u2026'", "a\u2026", r);
+}
+
+// custom max=1: 'ab' -> '…'
+{
+  const r = callFormatResumeError("ab", 1);
+  assertEqual("custom max=1: 'ab' -> '\u2026'", "\u2026", r);
+}
+
+// custom max=0: null
+{
+  const r = callFormatResumeError("something", 0);
+  assertEqual("custom max=0: null", null, r);
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 console.log("\n─────────────────────────────────────────────────────────────────────────────");
 console.log(`Results: ${PASS} passed, ${FAIL} failed`);

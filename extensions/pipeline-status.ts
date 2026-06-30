@@ -66,6 +66,8 @@ type PipelineStatus = {
 	status_file?: string;
 	log_file?: string;
 	control_file?: string;
+	// schema_version >= 2, blocked resume failure
+	resume_error?: unknown;
 };
 
 type PipelineView = {
@@ -298,13 +300,19 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 				: pipeline.state === "paused"
 					? `${indicator} paused: before ${nextIssue}`
 					: `${indicator} active: ${issue} ${pipeline.phase}${issueAge} · phase ${pipeline.phaseElapsed}${pr}`;
+			lines.push(`${active}${pending ? ` (${pending} pending)` : ""}`);
+			if (pipeline.state === "blocked") {
+				const resumeErr = formatResumeError(pipeline.status?.resume_error);
+				if (resumeErr !== null) {
+					lines.push(color(theme, "dim", `   resume error: ${resumeErr}`));
+				}
+			}
 			const controls = pipeline.terminal
 				? `dismiss: /pipeline-dismiss ${pipeline.id}`
 				: pipeline.state === "paused"
 					? `controls: /pipeline-resume ${pipeline.id} | /pipeline-abort ${pipeline.id}`
 					: `controls: /pipeline-pause ${pipeline.id} | /pipeline-skip ${pipeline.id} | /pipeline-abort ${pipeline.id}`;
 
-			lines.push(`${active}${pending ? ` (${pending} pending)` : ""}`);
 			lines.push(color(theme, "dim", `   completed: ${formatCompleted(completed)}`));
 			lines.push(color(theme, "dim", `   remaining: ${formatIssueList(remaining)}${skipped.length ? ` · skipped: ${formatIssueList(skipped)}` : ""}`));
 			lines.push(color(theme, "dim", `   log: ${pipeline.logFile}`));
@@ -685,6 +693,24 @@ function notify(ctx: ExtensionContextLike, message: string, level: NotifyLevel):
 
 function color(theme: { fg: (color: string, text: string) => string } | undefined, colorName: string, text: string): string {
 	return theme ? theme.fg(colorName, text) : text;
+}
+
+// ─── Exported pure helpers ──────────────────────────────────────────────────
+
+/**
+ * Sanitize and bound a resume_error value for widget display.
+ * Returns null when the value is non-string, empty/whitespace/control-only, or max <= 0.
+ * Collapses ASCII control characters (\x00-\x1F, \x7F) to spaces, collapses whitespace
+ * to a single space, trims, and truncates to `max` characters (appending `…` if cut).
+ */
+export function formatResumeError(value: unknown, max = 160): string | null {
+	if (typeof value !== "string") return null;
+	if (max <= 0) return null;
+	const normalized = value.replace(/[\x00-\x1F\x7F]+/g, " ").replace(/\s+/g, " ").trim();
+	if (normalized.length === 0) return null;
+	if (normalized.length <= max) return normalized;
+	if (max === 1) return "…";
+	return normalized.slice(0, max - 1) + "…";
 }
 
 // ─── Exported pure planner and helpers (used by tests and resume logic) ──────

@@ -12,6 +12,10 @@ All notable changes to this package are recorded here.
 - **Durable pause at between-issues checkpoint** — the pipeline process now persists pause state to
   `status.json` before sleeping, ensuring a dead process leaves a recoverable checkpoint rather
   than an ambiguous stale-running entry.
+- **Extension surfaces `resume_error` for blocked pipelines in the widget** — when a schema v2
+  status file carries a `resume_error` field and `pipeline_state=blocked`, the `pipeline-status`
+  below-editor widget shows a concise, sanitized, one-line reason (max 160 chars) as a dim
+  sub-line after the state indicator; the footer/status bar is unchanged.
 - **`pipeline.sh --resume` writes `blocked` + bounded `resume_error` on failed resume** — when
   `--resume` fails on a schema v2 status file (validation error, missing `log_dir`, or lock
   acquisition failure), it patches `pipeline_state=blocked` and a `resume_error` (≤ 512 chars)
