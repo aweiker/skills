@@ -16,6 +16,13 @@ All notable changes to this package are recorded here.
   status file carries a `resume_error` field and `pipeline_state=blocked`, the `pipeline-status`
   below-editor widget shows a concise, sanitized, one-line reason (max 160 chars) as a dim
   sub-line after the state indicator; the footer/status bar is unchanged.
+- **`pipeline.sh --resume` restores `ISSUES_COMPLETED_DETAILS`** — after a dead-process resume,
+  previously completed issue metadata (PR number, timestamps, duration) recorded in
+  `issues_completed_details` is reconstructed from the paused status file and re-emitted in the
+  first `running` status write; invalid/orphan/duplicate detail records are silently filtered
+  (non-object elements, non-numeric `.issue`, issues not in `issues_completed`, and duplicate
+  records after the first) without blocking resume; missing/null/non-array details fields are
+  treated as empty.
 - **`pipeline.sh --resume` writes `blocked` + bounded `resume_error` on failed resume** — when
   `--resume` fails on a schema v2 status file (validation error, missing `log_dir`, or lock
   acquisition failure), it patches `pipeline_state=blocked` and a `resume_error` (≤ 512 chars)

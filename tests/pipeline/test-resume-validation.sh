@@ -648,6 +648,147 @@ fi
 rm -f /tmp/vrs_stderr_$$.txt
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Test 20: valid issues_completed_details are exported in RESUME_ISSUES_COMPLETED_DETAILS_NDJSON
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== Test 20: valid details exported in RESUME_ISSUES_COMPLETED_DETAILS_NDJSON ==="
+
+cfg20="$TMP_DIR/config20.sh"
+make_config "$cfg20"
+sha20=$(compute_file_sha256 "$cfg20")
+st20="$TMP_DIR/status20.json"
+make_status "$st20" "$cfg20" "$sha20"
+# Inject valid issues_completed_details for issue 10
+python3 -c "
+import json
+d = json.load(open('$st20'))
+d['issues_completed_details'] = [
+  {\"issue\": 10, \"pr\": 42, \"started_at\": \"2026-01-01T00:00:00Z\",
+   \"completed_at\": \"2026-01-01T00:10:00Z\", \"duration_seconds\": 600}
+]
+json.dump(d, open('$st20', 'w'))
+"
+
+unset RESUME_ISSUES_COMPLETED_DETAILS_NDJSON
+if validate_resume_status "$st20" 2>/tmp/vrs_stderr_$$.txt; then
+  ok "test 20: validate_resume_status returns 0 with valid details"
+  # NDJSON must be non-empty
+  if [ -n "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" ]; then
+    ok "test 20: RESUME_ISSUES_COMPLETED_DETAILS_NDJSON is non-empty"
+  else
+    fail "test 20: RESUME_ISSUES_COMPLETED_DETAILS_NDJSON should be non-empty"
+  fi
+  # Must contain exactly one line
+  line_count20=$(echo "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | grep -c '.' 2>/dev/null || echo 0)
+  assert_eq "test 20: exactly one detail line" "1" "$line_count20"
+  # Line must be valid compact JSON with .issue == 10
+  issue_val20=$(echo "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  assert_eq "test 20: detail .issue == 10" "10" "$issue_val20"
+  # Line must be a compact object (no outer array or string wrapping)
+  first_char20=$(echo "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | head -c1)
+  assert_eq "test 20: detail is compact object (starts with {)" "{" "$first_char20"
+  # Optional field pr must be preserved
+  pr_val20=$(echo "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | jq -r '.pr' 2>/dev/null || echo "ERR")
+  assert_eq "test 20: detail .pr preserved" "42" "$pr_val20"
+else
+  err20=$(cat /tmp/vrs_stderr_$$.txt 2>/dev/null || true)
+  fail "test 20: validate_resume_status should return 0 with valid details" "$err20"
+fi
+rm -f /tmp/vrs_stderr_$$.txt
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 21: missing/null/non-array details — validation succeeds, exported details empty
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== Test 21: missing/null/non-array details — validation succeeds, exported empty ==="
+
+for variant in missing null string number; do
+  cfg21="$TMP_DIR/config21_${variant}.sh"
+  make_config "$cfg21"
+  sha21=$(compute_file_sha256 "$cfg21")
+  st21="$TMP_DIR/status21_${variant}.json"
+  make_status "$st21" "$cfg21" "$sha21"
+  case "$variant" in
+    missing)
+      python3 -c "import json; d=json.load(open('$st21')); del d['issues_completed_details']; json.dump(d,open('$st21','w'))" 2>/dev/null || true
+      ;;
+    null)
+      python3 -c "import json; d=json.load(open('$st21')); d['issues_completed_details']=None; json.dump(d,open('$st21','w'))"
+      ;;
+    string)
+      python3 -c "import json; d=json.load(open('$st21')); d['issues_completed_details']='not-an-array'; json.dump(d,open('$st21','w'))"
+      ;;
+    number)
+      python3 -c "import json; d=json.load(open('$st21')); d['issues_completed_details']=42; json.dump(d,open('$st21','w'))"
+      ;;
+  esac
+  unset RESUME_ISSUES_COMPLETED_DETAILS_NDJSON
+  if validate_resume_status "$st21" 2>/tmp/vrs_stderr_$$.txt; then
+    ok "test 21 ($variant): validate_resume_status returns 0"
+    exported21="${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}"
+    # Allow empty string or all-whitespace; must not contain a non-empty object line
+    non_empty_lines21=$(printf '%s' "$exported21" | { grep -c '^{' || true; })
+    assert_eq "test 21 ($variant): exported details empty" "0" "$non_empty_lines21"
+  else
+    err21=$(cat /tmp/vrs_stderr_$$.txt 2>/dev/null || true)
+    fail "test 21 ($variant): validate_resume_status should not fail due to details" "$err21"
+  fi
+  rm -f /tmp/vrs_stderr_$$.txt
+done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 22: stale/invalid detail records filtered; valid details still exported
+# (non-mutating: validate_resume_status does not change the status file)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== Test 22: stale/invalid details filtered; status file unchanged ==="
+
+cfg22="$TMP_DIR/config22.sh"
+make_config "$cfg22"
+sha22=$(compute_file_sha256 "$cfg22")
+st22="$TMP_DIR/status22.json"
+make_status "$st22" "$cfg22" "$sha22"
+# Inject a mix:
+#   - valid record for issue 10 (completed)
+#   - non-object element (array)
+#   - object with non-numeric issue
+#   - object with issue not in issues_completed (stale: issue 30)
+#   - duplicate record for issue 10 (should be filtered)
+python3 -c "
+import json
+d = json.load(open('$st22'))
+d['issues_completed_details'] = [
+  {\"issue\": 10, \"pr\": 7, \"duration_seconds\": 100},
+  [\"not\", \"an\", \"object\"],
+  {\"issue\": \"text\", \"pr\": 99},
+  {\"issue\": 30, \"pr\": 5, \"duration_seconds\": 200},
+  {\"issue\": 10, \"pr\": 8, \"duration_seconds\": 999}
+]
+json.dump(d, open('$st22', 'w'))
+"
+original22=$(cat "$st22")
+
+unset RESUME_ISSUES_COMPLETED_DETAILS_NDJSON
+if validate_resume_status "$st22" 2>/tmp/vrs_stderr_$$.txt; then
+  ok "test 22: validate_resume_status returns 0"
+  # Only one valid detail line (issue 10, first occurrence)
+  line_count22=$(printf '%s\n' "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | grep -c '^{' 2>/dev/null || echo 0)
+  assert_eq "test 22: exactly one valid detail exported" "1" "$line_count22"
+  issue_val22=$(printf '%s\n' "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  assert_eq "test 22: exported .issue == 10" "10" "$issue_val22"
+  # First-wins: pr should be 7 (first occurrence), not 8 (duplicate)
+  pr_val22=$(printf '%s\n' "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}" | jq -r '.pr' 2>/dev/null || echo "ERR")
+  assert_eq "test 22: first-wins dedup (.pr == 7)" "7" "$pr_val22"
+else
+  err22=$(cat /tmp/vrs_stderr_$$.txt 2>/dev/null || true)
+  fail "test 22: validate_resume_status should return 0" "$err22"
+fi
+# Non-mutating: status file must be unchanged
+after22=$(cat "$st22")
+assert_eq "test 22: status file unchanged (non-mutating)" "$original22" "$after22"
+rm -f /tmp/vrs_stderr_$$.txt
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""

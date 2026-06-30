@@ -101,7 +101,10 @@ Continue writing existing fields:
   "current_pr": null,
   "issues_total": [485, 416, 486],
   "issues_completed": [485],
-  "issues_completed_details": [],
+  "issues_completed_details": [
+    {"issue": 485, "pr": 42, "started_at": "2026-06-01T10:00:00Z",
+     "completed_at": "2026-06-01T10:35:00Z", "duration_seconds": 2100}
+  ],
   "issues_skipped": [],
   "issues_remaining": [416, 486]
 }
@@ -183,8 +186,11 @@ Resume flow:
    - script version is compatible.
 3. Source the recorded `config_file`.
 4. Reconstruct:
-   - `ISSUES_COMPLETED`;
-   - `ISSUES_COMPLETED_DETAILS`;
+   - `ISSUES_COMPLETED` (from `issues_completed` array, CSV);
+   - `ISSUES_COMPLETED_DETAILS` (from `issues_completed_details` — valid compact object lines only;
+     non-object elements, records with non-numeric `.issue`, stale issues not in `issues_completed`,
+     and duplicate issue records after the first are silently filtered;
+     missing/null/non-array details are treated as empty and never block resume);
    - `ISSUES_SKIPPED`;
    - `NEXT_ISSUE_INDEX`;
    - terminal/current fields.

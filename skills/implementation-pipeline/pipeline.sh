@@ -1084,6 +1084,51 @@ Inputs:
 EOF
 }
 
+# ── Resume details extraction ─────────────────────────────────────────────
+# extract_completed_details_ndjson <status_file>
+#
+# Emits zero or more compact JSON object lines, one valid detail record per line,
+# from .issues_completed_details in <status_file>.  Returns 0 even when details
+# are missing, null, or a non-array — in those cases nothing is emitted.
+#
+# Valid record criteria:
+#   - Element is a JSON object;
+#   - .issue is numeric;
+#   - .issue appears in .issues_completed;
+#   - first occurrence of each issue wins (order-preserving dedupe);
+#   - optional/extra fields are preserved as-is.
+#
+# Invalid/stale records are silently filtered (non-object, non-numeric issue,
+# issue not in issues_completed, duplicate after the first).
+extract_completed_details_ndjson() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  jq -c '
+    # Guard: details must be an array; if not, emit nothing.
+    if (.issues_completed_details | type) != "array" then empty
+    else
+      # Bind the completed set for membership test.
+      .issues_completed as $completed |
+      # Walk the details array, keeping an order-preserving seen-set.
+      reduce .issues_completed_details[] as $elem (
+        {seen: {}, out: []};
+        # Must be an object.
+        if ($elem | type) != "object" then .
+        # .issue must exist and be a number.
+        elif ($elem.issue | type) != "number" then .
+        # .issue must be in issues_completed.
+        elif ([$completed[] | select(. == $elem.issue)] | length) == 0 then .
+        # Dedupe: first record for each issue wins.
+        elif .seen[$elem.issue | tostring] then .
+        else
+          .seen[$elem.issue | tostring] = true |
+          .out += [$elem]
+        end
+      ) | .out[]
+    end
+  ' "$file" 2>/dev/null || true
+}
+
 # ── Resume validation helpers ──────────────────────────────────────────────
 # These helpers are used by a future --resume entrypoint. They are pure
 # functions with no side effects on the live pipeline; they require no git
@@ -1339,9 +1384,14 @@ validate_resume_status() {
   RESUME_ISSUES_TOTAL_CSV="$issues_total_csv"
   RESUME_ISSUES_COMPLETED_CSV="$issues_completed_csv"
   RESUME_ISSUES_SKIPPED_CSV="$issues_skipped_csv"
+
+  # Extract completed details (missing/null/non-array → empty; errors never block resume).
+  RESUME_ISSUES_COMPLETED_DETAILS_NDJSON="$(extract_completed_details_ndjson "$status_file" 2>/dev/null || true)"
+
   export RESUME_STATUS_FILE RESUME_CONFIG_FILE RESUME_PIPELINE_ID
   export RESUME_NEXT_ISSUE_INDEX RESUME_ISSUES_TOTAL_CSV
   export RESUME_ISSUES_COMPLETED_CSV RESUME_ISSUES_SKIPPED_CSV
+  export RESUME_ISSUES_COMPLETED_DETAILS_NDJSON
   return 0
 }
 
@@ -1579,10 +1629,15 @@ resume_entrypoint() {
   # Step 5: Restore cursor and completed/skipped arrays.
   NEXT_ISSUE_INDEX="$RESUME_NEXT_ISSUE_INDEX"
   ISSUES_COMPLETED=()
-  ISSUES_COMPLETED_DETAILS=()
   if [ -n "$RESUME_ISSUES_COMPLETED_CSV" ]; then
     IFS=',' read -ra ISSUES_COMPLETED <<< "$RESUME_ISSUES_COMPLETED_CSV"
   fi
+  # Restore completed details from validated ndjson exported by validate_resume_status.
+  ISSUES_COMPLETED_DETAILS=()
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    ISSUES_COMPLETED_DETAILS+=("$line")
+  done <<< "${RESUME_ISSUES_COMPLETED_DETAILS_NDJSON:-}"
   ISSUES_SKIPPED=()
   if [ -n "$RESUME_ISSUES_SKIPPED_CSV" ]; then
     IFS=',' read -ra ISSUES_SKIPPED <<< "$RESUME_ISSUES_SKIPPED_CSV"

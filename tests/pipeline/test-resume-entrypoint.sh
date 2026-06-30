@@ -956,6 +956,214 @@ rm -f "$stderrTG"
 rm -rf "$missing_parent_dir"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# T-H: Valid completed details are restored in ISSUES_COMPLETED_DETAILS after resume
+# and re-emitted in the first write_status "running" call.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== T-H: Valid details restored and re-emitted on first running status ==="
+
+reset_state
+cfgTH="$TMP_DIR/cfgTH.sh"
+make_config "$cfgTH"
+shaTH=$(compute_file_sha256 "$cfgTH")
+log_dirTH="$(mktemp -d)"
+stTH="$log_dirTH/status.json"
+make_status "$stTH" "$cfgTH" "$shaTH" "$log_dirTH" "pipe-TH" "1" "[10,20,30]" "[10]" "[]"
+# Inject valid completed details for issue 10
+python3 -c "
+import json
+d = json.load(open('$stTH'))
+d['issues_completed_details'] = [
+  {\"issue\": 10, \"pr\": 77, \"started_at\": \"2026-01-01T00:00:00Z\",
+   \"completed_at\": \"2026-01-01T00:10:00Z\", \"duration_seconds\": 600}
+]
+json.dump(d, open('$stTH', 'w'))
+"
+
+lock_dirTH=$(get_lock_dir "/tmp/fake-repo")
+rm -rf "$lock_dirTH"
+
+if resume_entrypoint "$stTH" 2>/tmp/re_stderr_$$.txt; then
+  ok "T-H: resume_entrypoint returns 0 with valid details"
+  # ISSUES_COMPLETED_DETAILS must be non-empty
+  if [ "${#ISSUES_COMPLETED_DETAILS[@]}" -gt 0 ]; then
+    ok "T-H: ISSUES_COMPLETED_DETAILS is non-empty"
+  else
+    fail "T-H: ISSUES_COMPLETED_DETAILS should be non-empty"
+  fi
+  # First element must be a compact JSON object with .issue == 10
+  first_detailTH="${ISSUES_COMPLETED_DETAILS[0]:-}"
+  issue_valTH=$(printf '%s' "$first_detailTH" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  assert_eq "T-H: ISSUES_COMPLETED_DETAILS[0] .issue == 10" "10" "$issue_valTH"
+  pr_valTH=$(printf '%s' "$first_detailTH" | jq -r '.pr' 2>/dev/null || echo "ERR")
+  assert_eq "T-H: ISSUES_COMPLETED_DETAILS[0] .pr == 77" "77" "$pr_valTH"
+  # Verify the written status.json includes the restored detail
+  if [ -f "$log_dirTH/status.json" ]; then
+    detail_count_TH=$(jq '.issues_completed_details | length' "$log_dirTH/status.json" 2>/dev/null || echo 0)
+    assert_eq "T-H: status.json issues_completed_details has 1 record" "1" "$detail_count_TH"
+    status_pr_TH=$(jq -r '.issues_completed_details[0].pr' "$log_dirTH/status.json" 2>/dev/null || echo "ERR")
+    assert_eq "T-H: status.json issues_completed_details[0].pr == 77" "77" "$status_pr_TH"
+  else
+    fail "T-H: status.json should exist after resume"
+  fi
+else
+  errTH=$(cat /tmp/re_stderr_$$.txt 2>/dev/null || true)
+  fail "T-H: resume_entrypoint should succeed" "$errTH"
+fi
+rm -f /tmp/re_stderr_$$.txt
+rm -rf "$lock_dirTH"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-I: Missing/null/non-array details do not fail resume; ISSUES_COMPLETED_DETAILS empty
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== T-I: Missing/null/non-array details do not fail resume ==="
+
+for variantTI in missing null string; do
+  reset_state
+  cfgTI="$TMP_DIR/cfgTI_${variantTI}.sh"
+  make_config "$cfgTI"
+  shaTI=$(compute_file_sha256 "$cfgTI")
+  log_dirTI="$(mktemp -d)"
+  stTI="$log_dirTI/status.json"
+  make_status "$stTI" "$cfgTI" "$shaTI" "$log_dirTI" "pipe-TI-${variantTI}" "1" "[10,20,30]" "[10]" "[]"
+  case "$variantTI" in
+    missing)
+      python3 -c "import json; d=json.load(open('$stTI')); del d['issues_completed_details']; json.dump(d,open('$stTI','w'))" 2>/dev/null || true
+      ;;
+    null)
+      python3 -c "import json; d=json.load(open('$stTI')); d['issues_completed_details']=None; json.dump(d,open('$stTI','w'))"
+      ;;
+    string)
+      python3 -c "import json; d=json.load(open('$stTI')); d['issues_completed_details']='bad'; json.dump(d,open('$stTI','w'))"
+      ;;
+  esac
+  lock_dirTI=$(get_lock_dir "/tmp/fake-repo")
+  rm -rf "$lock_dirTI"
+  if resume_entrypoint "$stTI" 2>/tmp/re_stderr_$$.txt; then
+    ok "T-I ($variantTI): resume_entrypoint returns 0"
+    assert_eq "T-I ($variantTI): ISSUES_COMPLETED_DETAILS empty" "0" "${#ISSUES_COMPLETED_DETAILS[@]}"
+  else
+    errTI=$(cat /tmp/re_stderr_$$.txt 2>/dev/null || true)
+    fail "T-I ($variantTI): resume should not fail due to bad details" "$errTI"
+  fi
+  rm -f /tmp/re_stderr_$$.txt
+  rm -rf "$lock_dirTI"
+done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-J: Invalid/extra/duplicate records filtered; first valid duplicate kept; original order preserved
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== T-J: Invalid/extra/dup records filtered; order preserved ==="
+
+reset_state
+cfgTJ="$TMP_DIR/cfgTJ.sh"
+make_config "$cfgTJ"
+shaTJ=$(compute_file_sha256 "$cfgTJ")
+log_dirTJ="$(mktemp -d)"
+stTJ="$log_dirTJ/status.json"
+# Two completed issues (10 and 20), next_issue_index=2
+make_status "$stTJ" "$cfgTJ" "$shaTJ" "$log_dirTJ" "pipe-TJ" "2" "[10,20,30]" "[10,20]" "[]"
+# Details:
+#   valid record for issue 10 (pr=1) — first
+#   non-object element
+#   valid record for issue 20 (pr=2) — valid
+#   stale: issue 30 not completed
+#   duplicate issue 10 (pr=9) — must be filtered; first (pr=1) wins
+python3 -c "
+import json
+d = json.load(open('$stTJ'))
+d['issues_completed_details'] = [
+  {\"issue\": 10, \"pr\": 1, \"duration_seconds\": 100},
+  42,
+  {\"issue\": 20, \"pr\": 2, \"duration_seconds\": 200},
+  {\"issue\": 30, \"pr\": 3},
+  {\"issue\": 10, \"pr\": 9, \"duration_seconds\": 999}
+]
+json.dump(d, open('$stTJ', 'w'))
+"
+
+lock_dirTJ=$(get_lock_dir "/tmp/fake-repo")
+rm -rf "$lock_dirTJ"
+
+if resume_entrypoint "$stTJ" 2>/tmp/re_stderr_$$.txt; then
+  ok "T-J: resume_entrypoint returns 0"
+  assert_eq "T-J: ISSUES_COMPLETED_DETAILS length == 2" "2" "${#ISSUES_COMPLETED_DETAILS[@]}"
+  # Order preserved: issue 10 first, issue 20 second
+  iss0_TJ=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[0]:-}" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  iss1_TJ=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[1]:-}" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  assert_eq "T-J: ISSUES_COMPLETED_DETAILS[0].issue == 10 (order)" "10" "$iss0_TJ"
+  assert_eq "T-J: ISSUES_COMPLETED_DETAILS[1].issue == 20 (order)" "20" "$iss1_TJ"
+  # First-wins: pr for issue 10 must be 1 (not 9)
+  pr0_TJ=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[0]:-}" | jq -r '.pr' 2>/dev/null || echo "ERR")
+  assert_eq "T-J: ISSUES_COMPLETED_DETAILS[0].pr == 1 (first-wins)" "1" "$pr0_TJ"
+else
+  errTJ=$(cat /tmp/re_stderr_$$.txt 2>/dev/null || true)
+  fail "T-J: resume_entrypoint should succeed" "$errTJ"
+fi
+rm -f /tmp/re_stderr_$$.txt
+rm -rf "$lock_dirTJ"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-K: After resume, mark_issue_completed appends new detail after restored details
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== T-K: After resume, mark_issue_completed appends new detail after restored ==="
+
+reset_state
+cfgTK="$TMP_DIR/cfgTK.sh"
+make_config "$cfgTK"
+shaTK=$(compute_file_sha256 "$cfgTK")
+log_dirTK="$(mktemp -d)"
+stTK="$log_dirTK/status.json"
+make_status "$stTK" "$cfgTK" "$shaTK" "$log_dirTK" "pipe-TK" "1" "[10,20,30]" "[10]" "[]"
+python3 -c "
+import json
+d = json.load(open('$stTK'))
+d['issues_completed_details'] = [
+  {\"issue\": 10, \"pr\": 55, \"duration_seconds\": 300}
+]
+json.dump(d, open('$stTK', 'w'))
+"
+
+lock_dirTK=$(get_lock_dir "/tmp/fake-repo")
+rm -rf "$lock_dirTK"
+
+if resume_entrypoint "$stTK" 2>/tmp/re_stderr_$$.txt; then
+  ok "T-K: resume_entrypoint returns 0"
+  assert_eq "T-K: ISSUES_COMPLETED_DETAILS has 1 restored detail" "1" "${#ISSUES_COMPLETED_DETAILS[@]}"
+
+  # Simulate starting issue 20
+  CURRENT_ISSUE=20
+  CURRENT_ISSUE_INDEX=1
+  NEXT_ISSUE_INDEX=2
+  CURRENT_ISSUE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  CURRENT_ISSUE_STARTED_EPOCH="$(date -u +%s)"
+  CURRENT_PR=88
+
+  # Call mark_issue_completed for issue 20
+  mark_issue_completed 20
+
+  assert_eq "T-K: ISSUES_COMPLETED_DETAILS has 2 elements after mark" "2" "${#ISSUES_COMPLETED_DETAILS[@]}"
+  # First element is still the restored detail for issue 10
+  iss0_TK=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[0]:-}" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  assert_eq "T-K: ISSUES_COMPLETED_DETAILS[0].issue == 10 (restored, unchanged)" "10" "$iss0_TK"
+  pr0_TK=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[0]:-}" | jq -r '.pr' 2>/dev/null || echo "ERR")
+  assert_eq "T-K: ISSUES_COMPLETED_DETAILS[0].pr == 55 (restored pr preserved)" "55" "$pr0_TK"
+  # Second element is the newly appended detail for issue 20
+  iss1_TK=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[1]:-}" | jq -r '.issue' 2>/dev/null || echo "ERR")
+  assert_eq "T-K: ISSUES_COMPLETED_DETAILS[1].issue == 20 (newly appended)" "20" "$iss1_TK"
+  pr1_TK=$(printf '%s' "${ISSUES_COMPLETED_DETAILS[1]:-}" | jq -r '.pr' 2>/dev/null || echo "ERR")
+  assert_eq "T-K: ISSUES_COMPLETED_DETAILS[1].pr == 88 (new pr)" "88" "$pr1_TK"
+else
+  errTK=$(cat /tmp/re_stderr_$$.txt 2>/dev/null || true)
+  fail "T-K: resume_entrypoint should succeed" "$errTK"
+fi
+rm -f /tmp/re_stderr_$$.txt
+rm -rf "$lock_dirTK"
+
 echo "Results: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
   exit 1
