@@ -12,8 +12,9 @@
 // Run: node tests/package/test-package-metadata.mjs
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -442,6 +443,126 @@ if (version !== null) {
   } else {
     fail(`CHANGELOG.md: contains header ## [${version}]`, `line containing \`${changelogHeader}\` not found`);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION C: Release checklist sentinel guard
+// Verifies that docs/checklists/v0.2.0-release.md exists and contains the
+// exact sentinel string so the checklist is never accidentally stripped.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CHECKLIST_REL = "docs/checklists/v0.2.0-release.md";
+const CHECKLIST_SENTINEL = "<!-- v0.2.0-release-checklist -->";
+
+// Pure helper: checkChecklist({ root?, content? }) → { errors: string[] }
+// - root: if provided, reads the file from disk and checks for sentinel
+// - content: if provided (and root is null), checks the string directly
+function checkChecklist({ root = null, content = null }) {
+  const errors = [];
+
+  let text = content;
+
+  if (root !== null) {
+    const filePath = path.resolve(root, CHECKLIST_REL);
+    try {
+      text = readFileSync(filePath, "utf8");
+    } catch {
+      errors.push(`file not found: ${filePath}`);
+      return { errors };
+    }
+  }
+
+  if (typeof text !== "string" || !text.includes(CHECKLIST_SENTINEL)) {
+    errors.push(`sentinel not found: expected ${JSON.stringify(CHECKLIST_SENTINEL)}`);
+  }
+
+  return { errors };
+}
+
+console.log("\n=== Section C: Release checklist fixture tests ===");
+
+// Helper: assert checkChecklist returns at least one error containing needle
+function assertChecklistFails(label, args, needle) {
+  const { errors } = checkChecklist(args);
+  if (errors.length === 0) {
+    fail(label, "expected at least one error, got none");
+    return;
+  }
+  if (needle && !errors.some((e) => e.includes(needle))) {
+    fail(label, `expected error containing ${JSON.stringify(needle)}, got: ${JSON.stringify(errors)}`);
+    return;
+  }
+  ok(label);
+}
+
+function assertChecklistPasses(label, args) {
+  const { errors } = checkChecklist(args);
+  if (errors.length === 0) {
+    ok(label);
+  } else {
+    fail(label, `expected no errors, got: ${JSON.stringify(errors)}`);
+  }
+}
+
+// C-F1: missing file in an empty temporary root fails with "file not found"
+{
+  let tmpDir;
+  try {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "checklist-test-"));
+    assertChecklistFails(
+      "C-F1: missing checklist file fails with file not found",
+      { root: tmpDir },
+      "file not found"
+    );
+  } finally {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// C-F2: content with no sentinel fails with "sentinel not found"
+assertChecklistFails(
+  "C-F2: content with no sentinel fails",
+  { root: null, content: "# Release Checklist\n\nNo sentinel here.\n" },
+  "sentinel not found"
+);
+
+// C-F3: wrong version sentinel fails
+assertChecklistFails(
+  "C-F3: wrong version sentinel fails",
+  { root: null, content: "<!-- v0.1.0-release-checklist -->\n# old checklist" },
+  "sentinel not found"
+);
+
+// C-F4: exact sentinel passes
+assertChecklistPasses(
+  "C-F4: exact sentinel passes",
+  { root: null, content: CHECKLIST_SENTINEL + "\n# Release Checklist" }
+);
+
+// C-F5: sentinel anywhere in file passes
+assertChecklistPasses(
+  "C-F5: sentinel anywhere in file passes",
+  { root: null, content: "# Release Checklist\n\nSome text.\n\n" + CHECKLIST_SENTINEL + "\n\nMore text." }
+);
+
+console.log("\n=== Section C: Live checklist validation ===");
+
+// C-L1: checklist file is readable
+let checklistContent;
+try {
+  checklistContent = readFileSync(path.join(repoRoot, CHECKLIST_REL), "utf8");
+  ok("C-L1: checklist file readable");
+} catch (e) {
+  fail("C-L1: checklist file readable", e.message);
+  checklistContent = null;
+}
+
+// C-L2: checkChecklist({ root: repoRoot }) returns no errors
+const { errors: checklistErrors } = checkChecklist({ root: repoRoot });
+if (checklistErrors.length === 0) {
+  ok("C-L2: checkChecklist({ root: repoRoot }) returns no errors");
+} else {
+  fail("C-L2: checkChecklist({ root: repoRoot }) returns no errors", JSON.stringify(checklistErrors));
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

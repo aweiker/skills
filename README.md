@@ -128,6 +128,7 @@ control, and pause/resume protocol including checkpoint semantics and dead-proce
 Execution plans for larger changes live under `docs/plans/`.
 
 - `docs/plans/resumable-implementation-pipelines.md` — design and execution plan for safe checkpoint-based pipeline resume.
+- `docs/checklists/v0.2.0-release.md` — release checklist for v0.2.0.
 
 ## Development workflow
 
