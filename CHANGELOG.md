@@ -46,6 +46,10 @@ All notable changes to this package are recorded here.
 
 ### Fixed
 
+- **`pipeline.sh --resume` preserves original `started_at`** — `resume_entrypoint` now restores
+  the `started_at` timestamp from the paused status file instead of resetting it to the resume
+  time, so `status.json` and the registry entry report the pipeline's true wall-clock start
+  throughout its lifetime; falls back to current UTC time only when the field is missing or empty.
 - **Hide unknown issue age** — the pipeline status widget no longer displays a negative or
   nonsensical age label when the issue's creation date is unknown or unavailable.
 

@@ -1644,7 +1644,15 @@ resume_entrypoint() {
   fi
 
   # Step 6: Initialize remaining pipeline state globals.
-  PIPELINE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Preserve the original started_at from the paused status file so the resumed
+  # pipeline reports its true wall-clock start rather than the resume time.
+  local resumed_started_at
+  resumed_started_at=$(json_get "$status_file" '.started_at // empty' 2>/dev/null || true)
+  if [ -n "$resumed_started_at" ]; then
+    PIPELINE_START="$resumed_started_at"
+  else
+    PIPELINE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  fi
   CURRENT_ISSUE=""
   CURRENT_ISSUE_INDEX=""
   CURRENT_ISSUE_STARTED_AT=""

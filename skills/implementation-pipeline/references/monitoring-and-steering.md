@@ -80,10 +80,12 @@ All v1 fields (`started_at`, `current_issue`, `current_phase`, `issues_completed
 Terminal states for `pipeline_state`: `"completed"`, `"blocked"`, `"aborted"`, `"killed"`. `"paused"` is a durable non-terminal state: the pipeline is waiting at a safe checkpoint for `resume` or `abort`.
 
 > **Blocked pipelines and `resume_error`:** When `pipeline.sh --resume` fails against a schema v2
-> status file, it patches `pipeline_state=blocked` and a bounded `resume_error` field (≤ 512 chars)
-> into the status file. The `pipeline-status` below-editor widget surfaces this as a dim sub-line
-> for pipelines in the `blocked` state (e.g. `resume error: config hash mismatch`), helping the
-> user diagnose why a resume attempt failed without inspecting the status file directly.
+> status file, it patches `pipeline_state=blocked` and a bounded `resume_error` field into the
+> status file.  The stored `resume_error` value is capped at **512 chars**.  The `pipeline-status`
+> below-editor widget surfaces this as a dim sub-line for pipelines in the `blocked` state
+> (e.g. `resume error: config hash mismatch`): the displayed excerpt is a sanitized single line
+> capped at **160 chars**, separate from the 512-char stored bound.  This helps the user diagnose
+> why a resume attempt failed without inspecting the status file directly.
 
 ## Active Registry
 

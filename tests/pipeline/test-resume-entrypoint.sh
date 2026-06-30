@@ -1164,6 +1164,109 @@ fi
 rm -f /tmp/re_stderr_$$.txt
 rm -rf "$lock_dirTK"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# T-L: --resume preserves original started_at from the paused status file
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== T-L: --resume preserves original started_at ==="
+
+reset_state
+cfgTL="$TMP_DIR/cfgTL.sh"
+make_config "$cfgTL"
+shaTL=$(compute_file_sha256 "$cfgTL")
+log_dirTL="$(mktemp -d)"
+stTL="$log_dirTL/status.json"
+make_status "$stTL" "$cfgTL" "$shaTL" "$log_dirTL" "pipe-TL" "1" "[10,20,30]" "[10]" "[]"
+# Inject a fixed started_at so we can assert exact preservation
+fixed_started_at="2026-01-15T08:30:00Z"
+python3 -c "
+import json
+d = json.load(open('$stTL'))
+d['started_at'] = '$fixed_started_at'
+json.dump(d, open('$stTL', 'w'))
+"
+
+lock_dirTL=$(get_lock_dir "/tmp/fake-repo")
+rm -rf "$lock_dirTL"
+
+if resume_entrypoint "$stTL" 2>/tmp/re_stderr_$$.txt; then
+  ok "T-L: resume_entrypoint returns 0"
+  # PIPELINE_START must equal the original started_at, not the resume time
+  assert_eq "T-L: PIPELINE_START equals original started_at" \
+    "$fixed_started_at" "$PIPELINE_START"
+  # The written status.json must also carry the original started_at
+  assert_json_field "T-L: status.json started_at preserved" \
+    "$stTL" "started_at" "$fixed_started_at"
+else
+  errTL=$(cat /tmp/re_stderr_$$.txt 2>/dev/null || true)
+  fail "T-L: resume_entrypoint should succeed" "$errTL"
+fi
+rm -f /tmp/re_stderr_$$.txt
+rm -rf "$lock_dirTL"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-M: --resume with missing/empty started_at falls back to current UTC time
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "=== T-M: --resume with missing started_at falls back to non-empty current time ==="
+
+for variantTM in missing empty; do
+  reset_state
+  cfgTM="$TMP_DIR/cfgTM_${variantTM}.sh"
+  make_config "$cfgTM"
+  shaTM=$(compute_file_sha256 "$cfgTM")
+  log_dirTM="$(mktemp -d)"
+  stTM="$log_dirTM/status.json"
+  make_status "$stTM" "$cfgTM" "$shaTM" "$log_dirTM" "pipe-TM-${variantTM}" "1" "[10,20,30]" "[10]" "[]"
+  case "$variantTM" in
+    missing)
+      python3 -c "
+import json
+d = json.load(open('$stTM'))
+if 'started_at' in d: del d['started_at']
+json.dump(d, open('$stTM', 'w'))
+"
+      ;;
+    empty)
+      python3 -c "
+import json
+d = json.load(open('$stTM'))
+d['started_at'] = ''
+json.dump(d, open('$stTM', 'w'))
+"
+      ;;
+  esac
+
+  lock_dirTM=$(get_lock_dir "/tmp/fake-repo")
+  rm -rf "$lock_dirTM"
+
+  if resume_entrypoint "$stTM" 2>/tmp/re_stderr_$$.txt; then
+    ok "T-M ($variantTM): resume_entrypoint returns 0"
+    # PIPELINE_START must be non-empty (the fallback current UTC time)
+    if [ -n "$PIPELINE_START" ]; then
+      ok "T-M ($variantTM): PIPELINE_START is non-empty (fallback)"
+    else
+      fail "T-M ($variantTM): PIPELINE_START should be non-empty"
+    fi
+    # The written status.json started_at must also be non-empty
+    written_started_at_TM=$(python3 -c "
+import json
+d = json.load(open('$stTM'))
+print(d.get('started_at', '') or '')
+" 2>/dev/null)
+    if [ -n "$written_started_at_TM" ]; then
+      ok "T-M ($variantTM): status.json started_at non-empty after fallback"
+    else
+      fail "T-M ($variantTM): status.json started_at should be non-empty after fallback"
+    fi
+  else
+    errTM=$(cat /tmp/re_stderr_$$.txt 2>/dev/null || true)
+    fail "T-M ($variantTM): resume_entrypoint should succeed" "$errTM"
+  fi
+  rm -f /tmp/re_stderr_$$.txt
+  rm -rf "$lock_dirTM"
+done
+
 echo "Results: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
   exit 1
