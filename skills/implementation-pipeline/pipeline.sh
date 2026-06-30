@@ -216,17 +216,17 @@ esac
 BOT_SKILL="${BOT_SKILL:-ai-pr-review-loop}"
 EXTRA_IMPL_CONTEXT="${EXTRA_IMPL_CONTEXT:-}"
 
-# Resolve skill paths: if not absolute, look in the skill directory's parent
+# Resolve skill paths: if not absolute, look for sibling skills in the package.
+# This supports both the repository package layout (skills/<name>) and loose copied
+# skill directories that live next to each other. Otherwise, let pi resolve it.
 resolve_skill() {
   local skill="$1"
   if [[ "$skill" == /* ]]; then
     echo "$skill"
   elif [ -d "$SCRIPT_DIR/../$skill" ]; then
     echo "$SCRIPT_DIR/../$skill"
-  elif [ -d "$HOME/.pi/agent/skills/$skill" ]; then
-    echo "$HOME/.pi/agent/skills/$skill"
   else
-    echo "$skill"  # Let pi resolve it
+    echo "$skill"
   fi
 }
 

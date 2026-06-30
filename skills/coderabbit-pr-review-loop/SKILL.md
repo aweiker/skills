@@ -27,7 +27,7 @@ This provider-specific skill is no longer the source of truth.
 
 ## Mandatory delegation
 
-Use `/home/ubuntu/.pi/agent/skills/ai-pr-review-loop` with provider `coderabbit`.
+Use the sibling `../ai-pr-review-loop` skill with provider `coderabbit`.
 
 - If this session is in orchestrator mode, load `../ai-pr-review-loop/SKILL.md`, select provider `coderabbit`, then follow its Orchestrator Mode.
 - If this session is in worker mode, load `../ai-pr-review-loop/SKILL.md`, `../ai-pr-review-loop/references/worker-mode.md`, and `../ai-pr-review-loop/references/providers/coderabbit.md`, then follow the unified Worker Mode.

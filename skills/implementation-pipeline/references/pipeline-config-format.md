@@ -117,7 +117,8 @@ EOF
 
 # 2. Launch in tmux with a unique session name. Do not kill a fixed session name.
 # pipeline.sh enforces same-repo concurrency with a repo-level lock.
-SKILL_DIR="$HOME/.pi/agent/skills/implementation-pipeline"
+# Resolve this to the directory containing implementation-pipeline/SKILL.md.
+SKILL_DIR="<absolute path to this skill directory>"
 tmux new-session -d -s "$SESSION" "$SKILL_DIR/pipeline.sh $CONFIG; exec bash"
 
 # 3. Report

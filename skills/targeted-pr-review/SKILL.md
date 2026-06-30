@@ -49,18 +49,20 @@ From the repository or worktree under review:
 
 ### 2. Dynamic holistic intake
 
-Run the discovery script from the repo root or any subdirectory:
+Run the discovery script from the repo root or any subdirectory. Resolve the script path from the loaded `targeted-pr-review` skill directory before executing:
 
 ```bash
 mkdir -p .targeted-review
-~/.pi/agent/skills/targeted-pr-review/scripts/discover-review-context.sh > .targeted-review/context.md
+DISCOVER_REVIEW_CONTEXT="<absolute path to this skill directory>/scripts/discover-review-context.sh"
+"$DISCOVER_REVIEW_CONTEXT" > .targeted-review/context.md
 ```
 
 Optionally pass a base ref:
 
 ```bash
 mkdir -p .targeted-review
-~/.pi/agent/skills/targeted-pr-review/scripts/discover-review-context.sh origin/master > .targeted-review/context.md
+DISCOVER_REVIEW_CONTEXT="<absolute path to this skill directory>/scripts/discover-review-context.sh"
+"$DISCOVER_REVIEW_CONTEXT" origin/master > .targeted-review/context.md
 ```
 
 Then read `.targeted-review/context.md` with the read tool.

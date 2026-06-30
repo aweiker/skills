@@ -35,9 +35,11 @@ Use direct `nohup pi`; `$!` must be the worker `pi` PID:
 ```bash
 cd "$WORKTREE"
 PI_WORKER_PROMPT="/tmp/$SESSION_ID-prompt.md"
+# Resolve this from the loaded package path before executing.
+AI_PR_REVIEW_SKILL="<absolute path to this package's skills/ai-pr-review-loop directory>"
 nohup pi --approve \
   --session-id "$SESSION_ID" \
-  --skill /home/ubuntu/.pi/agent/skills/ai-pr-review-loop \
+  --skill "$AI_PR_REVIEW_SKILL" \
   -p "@$PI_WORKER_PROMPT" \
   > "$LOG" 2>&1 &
 WORKER_PID=$!

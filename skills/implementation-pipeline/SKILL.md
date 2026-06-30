@@ -277,7 +277,9 @@ Key behaviors of `pipeline.sh`:
 ### 3. Launch in tmux
 
 ```bash
-SKILL_DIR="$HOME/.pi/agent/skills/implementation-pipeline"
+# Resolve this to the directory containing this SKILL.md, for example:
+# /path/to/skills-repo/skills/implementation-pipeline
+SKILL_DIR="<absolute path to this skill directory>"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 REPO_NAME="$(basename "$REPO")"
 SESSION="impl-pipeline-${REPO_NAME}-${TS}"

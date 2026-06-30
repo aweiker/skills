@@ -2,17 +2,17 @@
 
 This repository contains pi skills, helper scripts, and extensions used by the local coding-agent setup.
 
-It is a pi package: installing the repo loads the top-level skills and the extensions declared in
-`package.json`.
+It is a pi package: installing the repo loads the skills under `skills/` and the extensions declared
+in `package.json`.
 
 ## Package contents
 
 | Path | Purpose |
 | --- | --- |
-| `*/SKILL.md` | Top-level pi skills. Each directory is a self-contained skill. |
-| `implementation-pipeline/pipeline.sh` | Deterministic implementation-pipeline runner used by the `implementation-pipeline` skill. |
-| `implementation-pipeline/references/` | Pipeline config, monitoring, and operational reference docs. |
-| `ai-pr-review-loop/references/` | Provider-specific review-loop contracts and worker-mode docs. |
+| `skills/*/SKILL.md` | Pi skills. Each directory is a self-contained skill. |
+| `skills/implementation-pipeline/pipeline.sh` | Deterministic implementation-pipeline runner used by the `implementation-pipeline` skill. |
+| `skills/implementation-pipeline/references/` | Pipeline config, monitoring, and operational reference docs. |
+| `skills/ai-pr-review-loop/references/` | Provider-specific review-loop contracts and worker-mode docs. |
 | `extensions/` | TypeScript pi extensions loaded by the package. |
 | `package.json` | Pi package manifest. |
 
@@ -21,13 +21,13 @@ It is a pi package: installing the repo loads the top-level skills and the exten
 Install from git:
 
 ```bash
-pi install git:git@github.com:aweiker/skills.git@main
+pi install git:git@github.com:aweiker/skills.git@v0.1.0
 ```
 
 For local development on this machine, the checkout can be installed directly:
 
 ```bash
-pi install /home/ubuntu/.pi/agent/skills
+pi install /home/ubuntu/repos/skills
 ```
 
 After installing or changing package resources, reload pi:
@@ -43,14 +43,14 @@ After installing or changing package resources, reload pi:
 ```json
 {
   "pi": {
-    "extensions": ["./extensions/*.ts"],
-    "skills": ["./*/SKILL.md"]
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
   }
 }
 ```
 
-The explicit `skills` entry matters because this repo stores skills at the repository root rather
-than under a conventional `skills/` directory.
+The package uses conventional `skills/` and `extensions/` directories so it can be installed as a
+normal pi package instead of relying on loose global files.
 
 ## Skills
 
@@ -103,7 +103,7 @@ Widget output includes:
 
 ## Implementation pipeline status contract
 
-`implementation-pipeline/pipeline.sh` writes machine-readable status to:
+`skills/implementation-pipeline/pipeline.sh` writes machine-readable status to:
 
 ```text
 $LOG_DIR/status.json
@@ -118,15 +118,15 @@ ${PIPELINE_REGISTRY_ROOT:-/tmp/pi-pipeline-status/active}/<pipeline-id>.json
 Completed or blocked pipelines intentionally remain in the registry until dismissed so the extension
 can keep the final result visible.
 
-See `implementation-pipeline/references/monitoring-and-steering.md` for the full monitoring and
-control protocol.
+See `skills/implementation-pipeline/references/monitoring-and-steering.md` for the full monitoring
+and control protocol.
 
 ## Development workflow
 
 Validate shell and TypeScript extension syntax before committing:
 
 ```bash
-bash -n implementation-pipeline/pipeline.sh
+bash -n skills/implementation-pipeline/pipeline.sh
 node --experimental-strip-types --check extensions/pipeline-status.ts
 ```
 
