@@ -330,11 +330,14 @@ For `AI_REVIEW_PROVIDER=coderabbit`, the implementation prompt requires the impl
 commit locally, then run `coderabbit doctor` and
 `coderabbit review --agent --type committed --base <BASE_BRANCH>` before push/PR creation when
 `LOCAL_CODERABBIT_PRECHECK=1`. Verified correctness/security/functional findings must be fixed,
-validated, committed/amended, and re-reviewed locally before opening the PR; false-positive/stale or
-explicitly out-of-scope findings must be documented in the PR body and handoff. The pipeline rejects
-implementation handoffs that do not document a successful local CodeRabbit precheck with either zero
-findings or all real findings addressed. This pre-PR pass does not replace the post-PR CodeRabbit
-approval/no-actionable gate.
+validated, committed/amended, and re-reviewed locally before opening the PR. Agreement and
+disagreement with local CodeRabbit both require evidence: accepted findings name the violated
+invariant and proof; false-positive/stale or explicitly out-of-scope findings cite exact
+code/test/contract/scope evidence, run `coderabbit feedback "False positive: ... Evidence: ..."`
+(or `coderabbit feedback --agent "..."` when useful), and are documented in the PR body and handoff.
+The pipeline rejects implementation handoffs that do not document a successful local CodeRabbit
+precheck with either zero findings or all real findings addressed. This pre-PR pass does not replace
+the post-PR CodeRabbit approval/no-actionable gate.
 5. Merge if CI green
 6. Write handoff
 

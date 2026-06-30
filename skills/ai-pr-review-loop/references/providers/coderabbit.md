@@ -42,6 +42,21 @@ coderabbit review findings
 
 The implementation handoff and PR body/comment must record the command, result, and disposition of findings. The post-PR review loop must verify that documentation before triggering remote CodeRabbit. If missing, run the local CLI as a recovery fallback, fix real findings, document the result, and note the process violation in HANDOFF. Remote CodeRabbit approval does not substitute for this pre-PR CLI check.
 
+### Local CLI Classification and Feedback
+
+Treat local CodeRabbit findings as evidence requests, not instructions to obey. Agreement and disagreement both require evidence:
+
+- For every finding you accept, name the violated invariant, cite the code/test path that proves the defect, fix it, and rerun local CodeRabbit.
+- For every finding you reject as false-positive, stale, or out of scope, cite the exact code path, test, contract, issue scope, or PR boundary proving that disposition.
+- When rejecting or criticizing a local CLI finding, send feedback with the CLI before continuing:
+
+  ```bash
+  coderabbit feedback "False positive: <finding summary>. Evidence: <file/function/test/contract>. No change made because <reason>."
+  ```
+
+  Use `coderabbit feedback --agent "..."` when structured output is useful for logs.
+- Do not write vague rationales such as "not applicable", "seems fine", or "out of scope" without the evidence. If evidence is missing, keep investigating or fix the finding.
+
 ## APIs
 
 ```bash

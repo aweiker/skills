@@ -39,11 +39,11 @@ Worker requirements:
 1. Append round progress to `/tmp/<SESSION_ID>-progress.log`: round number, findings count, avg quality, action.
 2. Work only in WORKTREE.
 3. Rehydrate current state first: git status, gh pr view including PR body, provider inline-comment API, provider review/comment bodies.
-4. For CodeRabbit provider, verify/document the local CodeRabbit CLI precheck before remote trigger. If missing, run `coderabbit doctor` and `coderabbit review --agent --type committed --base <base>` as a fallback first, fix real findings, and record the result in a PR comment/body and HANDOFF.
+4. For CodeRabbit provider, verify/document the local CodeRabbit CLI precheck before remote trigger. If missing, run `coderabbit doctor` and `coderabbit review --agent --type committed --base <base>` as a fallback first, fix real findings, and record the result in a PR comment/body and HANDOFF. For any local CodeRabbit finding you reject, cite exact code/test/contract/scope evidence and run `coderabbit feedback "False positive: ... Evidence: ..."` or `coderabbit feedback --agent "..."` before continuing.
 5. Use provider preflight rules to decide whether unresolved comments, approval, or review trigger is next.
 6. Trigger exactly one provider review only when preflight says it is required.
 7. Establish the PR Scope Contract from the linked issue, PR body, acceptance criteria, and current diff; keep the loop focused on that problem.
-8. Classify all selected findings by quality and verify each against actual code before fixing. Treat valid findings outside the Scope Contract as `0.3` out of scope.
+8. Classify all selected findings by quality and verify each against actual code before fixing. Agreement and disagreement both require evidence: accepted findings name the violated invariant and proof; rejected findings cite exact code/test/contract/scope evidence. Treat valid findings outside the Scope Contract as `0.3` out of scope.
 9. For every out-of-scope valid finding, create/link a GitHub issue, reply with the issue URL, and leave triage/implementation outside this loop.
 10. Rate every classified finding via the provider's feedback mechanism (see provider file Feedback section). FEEDBACK_LOG must not be empty at session end. This records feedback only; loop continuation is controlled by internal quality classification plus provider preflight, not by feedback acknowledgement text.
 11. Run the post-triage quality gate before writing fixes.

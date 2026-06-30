@@ -68,7 +68,7 @@ Then reply inline with the scope rationale and issue URL. Do not implement the f
 Use this exact order each round:
 
 1. Rehydrate worktree, PR head, PR body, CI, reviews, issue comments, inline comments.
-2. For CodeRabbit provider, verify that the PR body or recent PR comments document a local CodeRabbit CLI precheck (`coderabbit doctor` plus `coderabbit review --agent --type committed --base <base>`). If missing, run the local CLI check before triggering remote CodeRabbit, fix verified real findings, update the PR body/comment with the result, and record in HANDOFF that the required pre-PR check was recovered post-PR. This fallback is a safety net; it does not relax the implementation-pipeline requirement to run the CLI before PR creation.
+2. For CodeRabbit provider, verify that the PR body or recent PR comments document a local CodeRabbit CLI precheck (`coderabbit doctor` plus `coderabbit review --agent --type committed --base <base>`). If missing, run the local CLI check before triggering remote CodeRabbit, fix verified real findings, update the PR body/comment with the result, and record in HANDOFF that the required pre-PR check was recovered post-PR. This fallback is a safety net; it does not relax the implementation-pipeline requirement to run the CLI before PR creation. Local CodeRabbit agreement/disagreement must be evidence-backed: accepted findings name the violated invariant and proof; rejected findings cite exact code/test/contract/scope evidence and use `coderabbit feedback` (or `coderabbit feedback --agent`) before continuing.
 3. Run provider preflight:
    - unresolved inline/follow-up comments selected for triage;
    - current-head approval/no-actionable signal stops successfully;
@@ -142,14 +142,23 @@ Rules:
 
 ## Validation Discipline
 
+For every finding, do not agree or disagree without evidence.
+
 For every real finding:
 
 - name the invariant it violates;
+- cite the code path/test/contract proving the defect;
 - search for adjacent/global instances of the same defect class;
 - add or update tests when behavior changed;
 - run focused validation first;
 - run the repository-required full validation before push;
 - include validation commands/results in HANDOFF and inline reply.
+
+For every rejected finding:
+
+- cite the exact code path, test, contract, issue scope, or PR boundary proving it is false-positive, stale, non-actionable, or out of scope;
+- for local CodeRabbit CLI findings, run `coderabbit feedback "False positive: ... Evidence: ..."` or `coderabbit feedback --agent "..."` before continuing;
+- record the evidence in HANDOFF and any provider reply.
 
 ## Reply Contract
 
