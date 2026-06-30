@@ -253,7 +253,8 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 		if (active.length === 1) {
 			const pipeline = active[0]!;
 			const issue = pipeline.status?.current_issue ? `#${pipeline.status.current_issue}` : "no issue";
-			return color(theme, "accent", "pipeline:") + " " + color(theme, "dim", `${issue} ${pipeline.phase} issue ${pipeline.issueElapsed}`);
+			const issueAge = pipeline.issueElapsed === "unknown" ? "" : ` issue age ${pipeline.issueElapsed}`;
+			return color(theme, "accent", "pipeline:") + " " + color(theme, "dim", `${issue} ${pipeline.phase}${issueAge}`);
 		}
 		if (active.length > 1) {
 			return color(theme, "accent", "pipelines:") + " " + color(theme, "dim", `${active.length} running${terminal ? `, ${terminal} terminal` : ""}`);
@@ -273,9 +274,10 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 			const remaining = status?.issues_remaining ?? [];
 			const pending = pendingCommands.get(pipeline.id);
 			const indicator = stateIndicator(pipeline.state);
+			const issueAge = pipeline.issueElapsed === "unknown" ? "" : ` · issue age ${pipeline.issueElapsed}`;
 			const active = pipeline.terminal
 				? `${indicator} ${pipeline.repoName} ${pipeline.state}`
-				: `${indicator} active: ${issue} ${pipeline.phase} · issue ${pipeline.issueElapsed} · phase ${pipeline.phaseElapsed}${pr}`;
+				: `${indicator} active: ${issue} ${pipeline.phase}${issueAge} · phase ${pipeline.phaseElapsed}${pr}`;
 			const controls = pipeline.terminal
 				? `dismiss: /pipeline-dismiss ${pipeline.id}`
 				: `controls: /pipeline-pause ${pipeline.id} | /pipeline-skip ${pipeline.id} | /pipeline-abort ${pipeline.id}`;
