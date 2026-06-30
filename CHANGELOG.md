@@ -2,6 +2,18 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.1] - 2026-06-30
+
+### Fixed
+
+- **Pipeline widget issue age advances live** — the `pipeline-status` extension now derives the
+  active issue age from `current_issue_started_at` when available instead of preferring the
+  write-time `current_issue_elapsed_seconds` snapshot, preventing status lines such as
+  `issue 1m1s · phase 16m53s` from freezing issue age while phase age advances; the snapshot field
+  remains a fallback for old or sparse status files.
+
+---
+
 ## [0.2.0] - 2026-06-30
 
 ### Added
