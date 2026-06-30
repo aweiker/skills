@@ -2,6 +2,22 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.2] - 2026-06-30
+
+### Fixed
+
+- **Pipeline widget durations are less noisy** — active durations now use compact labels such as
+  `3m20s`, `17m`, `1h12m`, or `2d4h`; completed issue durations use coarser labels such as
+  `<1m`, `56m`, `1h12m`, or `2d4h` so the widget avoids stale-looking second counters for
+  completed work.
+- **Pipeline control loops poll faster by default** — implementation-pipeline handoff polling,
+  CI polling, pause control polling, dead-agent flush waits, and final post-issue settle delays are
+  configurable via `HANDOFF_POLL_SECONDS`, `CI_POLL_SECONDS`, `PAUSE_POLL_SECONDS`,
+  `DEAD_AGENT_FLUSH_SECONDS`, and `FINAL_STATUS_SETTLE_SECONDS`; defaults reduce idle latency
+  without skipping review or CI gates.
+
+---
+
 ## [0.2.1] - 2026-06-30
 
 ### Fixed
