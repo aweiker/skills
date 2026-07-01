@@ -85,6 +85,7 @@ Commands:
 
 | Command | Behavior |
 | --- | --- |
+| `/pipeline-run <JSON\|key=value...>` | Launch a new implementation pipeline through the extension-owned detached tmux launcher. |
 | `/pipeline-status` | Refresh/show current repo pipeline status. |
 | `/pipeline-log [id]` | Open a live tail view of the pipeline log. |
 | `/pipeline-pause [id]` | Request pause between phases. |

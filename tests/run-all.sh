@@ -40,6 +40,8 @@ run_step bash tests/pipeline/test-resume-entrypoint.sh
 
 run_step node tests/pipeline/test-pipeline-resume-extension.mjs
 
+run_step node tests/pipeline/test-pipeline-launch-extension.mjs
+
 run_step node tests/package/test-package-metadata.mjs
 
 run_step shellcheck \

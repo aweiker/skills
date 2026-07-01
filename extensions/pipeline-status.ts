@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_REGISTRY_ROOT = "/tmp/pi-pipeline-status/active";
 const STATUS_KEY = "pipeline-status";
@@ -195,6 +196,101 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			await refresh(ctx as ExtensionContextLike);
 			await showLog(ctx as ExtensionContextLike, args.trim() || undefined);
+		},
+	});
+
+	pi.registerCommand("pipeline-run", {
+		description: "Launch a new implementation pipeline. Args: JSON object or key=value pairs. Required: repo, worktreeBase, ownerRepo, aiReviewProvider, aiReviewApiBase, baseBranch, issues, branches.",
+		handler: async (args, ctx) => {
+			const typedCtx = ctx as ExtensionContextLike;
+			const parsedOrError = parsePipelineRunArgs(args.trim());
+			if (!parsedOrError.ok) {
+				notify(typedCtx, `pipeline-run: ${parsedOrError.error}`, "error");
+				return;
+			}
+			const validOrError = validateLaunchParams(parsedOrError.params);
+			if (!validOrError.ok) {
+				notify(typedCtx, `pipeline-run validation: ${validOrError.errors.join("; ")}`, "error");
+				return;
+			}
+			const scriptPath = pipelineScriptPath();
+			const launchResult = await executeLaunch(pi, validOrError.params, scriptPath);
+			if (!launchResult.ok) {
+				notify(typedCtx, `pipeline-run launch failed: ${launchResult.error}`, "error");
+				return;
+			}
+			notify(typedCtx, formatLaunchSummary(launchResult), "info");
+			await refresh(typedCtx);
+		},
+	});
+
+	pi.registerTool({
+		name: "pipeline_run",
+		label: "Launch Pipeline",
+		description: "Launch a new implementation pipeline in a detached tmux session. Returns session name, config path, log path, and status path.",
+		promptSnippet: "Launch an implementation pipeline for a list of GitHub issues",
+		promptGuidelines: [
+			"Use pipeline_run to start a new implementation pipeline instead of writing bash or running pipeline.sh directly. Always prefer pipeline_run unless tmux is unavailable and the user explicitly approves a fallback.",
+		],
+		parameters: {
+			type: "object" as const,
+			required: ["repo", "worktreeBase", "ownerRepo", "aiReviewProvider", "aiReviewApiBase", "baseBranch", "issues", "branches"],
+			properties: {
+				// Required
+				repo: { type: "string", description: "Absolute path to canonical repo checkout" },
+				worktreeBase: { type: "string", description: "Absolute path for worktrees base directory" },
+				ownerRepo: { type: "string", description: "GitHub owner/repo, e.g. org/repo-name" },
+				aiReviewProvider: { type: "string", description: "AI review provider: coderabbit or ghe-pr-bot" },
+				aiReviewApiBase: { type: "string", description: "GitHub API base URL for the provider" },
+				baseBranch: { type: "string", description: "Base branch to merge into, e.g. main or master" },
+				issues: { type: "array", items: { type: "number" }, description: "Issue numbers to implement" },
+				branches: { type: "array", items: { type: "string" }, description: "Branch names, same length as issues" },
+				// Optional
+				mergeStrategy: { type: "string", description: "squash (default), merge, or rebase" },
+				reviewLoopCount: { type: "number", description: "Max bot review rounds (default: 5)" },
+				timeoutImpl: { type: "number", description: "Implementation timeout in seconds (default: 2400)" },
+				timeoutReview: { type: "number", description: "Self-review timeout in seconds (default: 1200)" },
+				timeoutBot: { type: "number", description: "Bot review timeout in seconds (default: 7200)" },
+				timeoutCi: { type: "number", description: "CI polling timeout in seconds (default: 600)" },
+				timeoutGate: { type: "number", description: "Scope gate timeout in seconds (default: 120)" },
+				handoffPollSeconds: { type: "number", description: "Handoff-file polling interval (default: 5)" },
+				ciPollSeconds: { type: "number", description: "CI status polling interval (default: 10)" },
+				pausePollSeconds: { type: "number", description: "Paused control-file polling interval (default: 2)" },
+				deadAgentFlushSeconds: { type: "number", description: "Dead-agent handoff flush grace period (default: 2)" },
+				finalStatusSettleSeconds: { type: "number", description: "Post-issue settle delay in seconds; 0 means no delay (default: 0)" },
+				localCoderabbitPrecheck: { type: "boolean", description: "Run local coderabbit review before opening PRs when provider=coderabbit (default: true)" },
+				skipReview: { type: "boolean", description: "Skip self-review phase (default: false)" },
+				skipBot: { type: "boolean", description: "Skip bot review phase (default: false)" },
+				skipScopeGate: { type: "boolean", description: "Skip scope gate (default: false)" },
+				forceIssues: { type: "string", description: "Comma-separated issue numbers to bypass scope gate" },
+				noMerge: { type: "boolean", description: "Stop after review without merging (default: false)" },
+				continueOnFailure: { type: "boolean", description: "Continue past failures for independent issues (default: false)" },
+				extraImplContext: { type: "string", description: "Extra context appended to implementation prompt" },
+			},
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const validOrError = validateLaunchParams(params as unknown as PipelineLaunchParams);
+			if (!validOrError.ok) {
+				throw new Error(`pipeline_run validation: ${validOrError.errors.join("; ")}`);
+			}
+			const scriptPath = pipelineScriptPath();
+			const launchResult = await executeLaunch(pi, validOrError.params, scriptPath);
+			if (!launchResult.ok) {
+				throw new Error(`pipeline_run launch failed: ${launchResult.error}`);
+			}
+			return {
+				content: [{ type: "text" as const, text: formatLaunchSummary(launchResult) }],
+				details: {
+					sessionName: launchResult.sessionName,
+					configPath: launchResult.configPath,
+					logDir: launchResult.logDir,
+					logFile: launchResult.logFile,
+					statusFile: launchResult.statusFile,
+					controlFile: launchResult.controlFile,
+					attachCmd: launchResult.attachCmd,
+					issues: launchResult.issues,
+				},
+			};
 		},
 	});
 
@@ -864,4 +960,469 @@ export function resumeSessionName(pipelineId: string): string {
 export function manualResumeCommand(scriptFile: string | undefined, statusFile: string | undefined): string {
 	if (!scriptFile || !statusFile) return "";
 	return `${shellQuote(scriptFile)} --resume ${shellQuote(statusFile)}`;
+}
+
+// ─── Pipeline Launch: types ──────────────────────────────────────────────────
+
+export type PipelineLaunchParams = {
+	// Required
+	repo: string;
+	worktreeBase: string;
+	ownerRepo: string;
+	aiReviewProvider: string;
+	aiReviewApiBase: string;
+	baseBranch: string;
+	issues: number[];
+	branches: string[];
+	// Optional
+	mergeStrategy?: string;
+	reviewLoopCount?: number;
+	timeoutImpl?: number;
+	timeoutReview?: number;
+	timeoutBot?: number;
+	timeoutCi?: number;
+	timeoutGate?: number;
+	handoffPollSeconds?: number;
+	ciPollSeconds?: number;
+	pausePollSeconds?: number;
+	deadAgentFlushSeconds?: number;
+	finalStatusSettleSeconds?: number;
+	localCoderabbitPrecheck?: boolean;
+	skipReview?: boolean;
+	skipBot?: boolean;
+	skipScopeGate?: boolean;
+	forceIssues?: string;
+	noMerge?: boolean;
+	continueOnFailure?: boolean;
+	extraImplContext?: string;
+};
+
+export type ValidateResult =
+	| { ok: true; params: PipelineLaunchParams }
+	| { ok: false; errors: string[] };
+
+export type ParseResult =
+	| { ok: true; params: Partial<PipelineLaunchParams> & Record<string, unknown> }
+	| { ok: false; error: string };
+
+export type LaunchSessionResult =
+	| { ok: true; sessionName: string; configPath: string; logDir: string; logFile: string; statusFile: string; controlFile: string; attachCmd: string; issues: number[] }
+	| { ok: false; error: string };
+
+export type PlanLaunchAction =
+	| { type: "launch"; sessionName: string; configPath: string; logDir: string; shellCmd: string; scriptPath: string }
+	| { type: "session-exists"; sessionName: string; suffix: number }
+	| { type: "error"; message: string };
+
+// ─── Pipeline Launch: pure helpers ──────────────────────────────────────────
+
+const REQUIRED_STRINGS: (keyof PipelineLaunchParams)[] = [
+	"repo", "worktreeBase", "ownerRepo", "aiReviewProvider", "aiReviewApiBase", "baseBranch",
+];
+
+const POSITIVE_INT_OPTS: (keyof PipelineLaunchParams)[] = [
+	"reviewLoopCount", "timeoutImpl", "timeoutReview", "timeoutBot", "timeoutCi", "timeoutGate",
+	"handoffPollSeconds", "ciPollSeconds", "pausePollSeconds", "deadAgentFlushSeconds",
+];
+
+const BOOLEAN_OPTS: (keyof PipelineLaunchParams)[] = [
+	"localCoderabbitPrecheck", "skipReview", "skipBot", "skipScopeGate",
+	"noMerge", "continueOnFailure",
+];
+
+/**
+ * Pure validation of pipeline launch parameters.
+ * Does NOT check repo existence or same-repo concurrency — those are delegated to pipeline.sh.
+ */
+export function validateLaunchParams(raw: Partial<PipelineLaunchParams> & Record<string, unknown>): ValidateResult {
+	const errors: string[] = [];
+
+	// Required non-empty strings
+	for (const key of REQUIRED_STRINGS) {
+		const val = raw[key];
+		if (typeof val !== "string" || val.trim() === "") {
+			errors.push(`${key} is required and must be a non-empty string`);
+		}
+	}
+
+	// Absolute path checks for repo and worktreeBase
+	if (typeof raw.repo === "string" && raw.repo.trim() !== "" && !raw.repo.startsWith("/")) {
+		errors.push("repo must be an absolute path");
+	}
+	if (typeof raw.worktreeBase === "string" && raw.worktreeBase.trim() !== "" && !raw.worktreeBase.startsWith("/")) {
+		errors.push("worktreeBase must be an absolute path");
+	}
+
+	// AI review provider
+	const provider = typeof raw.aiReviewProvider === "string" ? raw.aiReviewProvider : "";
+	if (provider !== "" && provider !== "coderabbit" && provider !== "ghe-pr-bot") {
+		errors.push(`aiReviewProvider must be coderabbit or ghe-pr-bot (got: ${provider})`);
+	}
+
+	// issues: non-empty array of positive integers
+	if (!Array.isArray(raw.issues) || raw.issues.length === 0) {
+		errors.push("issues must be a non-empty array of issue numbers");
+	} else {
+		for (const iss of raw.issues) {
+			if (typeof iss !== "number" || !Number.isInteger(iss) || iss <= 0) {
+				errors.push(`issues must contain only positive integers (got: ${JSON.stringify(iss)})`);
+				break;
+			}
+		}
+	}
+
+	// branches: non-empty array of non-empty strings, same length as issues
+	if (!Array.isArray(raw.branches) || raw.branches.length === 0) {
+		errors.push("branches must be a non-empty array of branch names");
+	} else {
+		for (const br of raw.branches) {
+			if (typeof br !== "string" || br.trim() === "") {
+				errors.push("branches must contain only non-empty strings");
+				break;
+			}
+		}
+	}
+
+	// issues and branches must be same length
+	if (Array.isArray(raw.issues) && raw.issues.length > 0 && Array.isArray(raw.branches) && raw.branches.length > 0) {
+		if (raw.issues.length !== raw.branches.length) {
+			errors.push(`issues (${raw.issues.length}) and branches (${raw.branches.length}) must be the same length`);
+		}
+	}
+
+	// mergeStrategy
+	if (raw.mergeStrategy !== undefined && raw.mergeStrategy !== "squash" && raw.mergeStrategy !== "merge" && raw.mergeStrategy !== "rebase") {
+		errors.push(`mergeStrategy must be squash, merge, or rebase (got: ${String(raw.mergeStrategy)})`);
+	}
+
+	// Positive integer options
+	for (const key of POSITIVE_INT_OPTS) {
+		const val = raw[key];
+		if (val !== undefined) {
+			if (typeof val !== "number" || !Number.isInteger(val) || val <= 0) {
+				errors.push(`${key} must be a positive integer (got: ${JSON.stringify(val)})`);
+			}
+		}
+	}
+
+	// finalStatusSettleSeconds: may be 0 or positive integer
+	if (raw.finalStatusSettleSeconds !== undefined) {
+		const val = raw.finalStatusSettleSeconds;
+		if (typeof val !== "number" || !Number.isInteger(val) || val < 0) {
+			errors.push(`finalStatusSettleSeconds must be a non-negative integer (got: ${JSON.stringify(val)})`);
+		}
+	}
+
+	// Boolean options accept true/false or numeric 0/1 so command callers can use shell-friendly values.
+	for (const key of BOOLEAN_OPTS) {
+		const val = raw[key];
+		if (val !== undefined && typeof val !== "boolean" && val !== 0 && val !== 1) {
+			errors.push(`${key} must be a boolean or 0/1 (got: ${JSON.stringify(val)})`);
+		}
+	}
+
+	if (raw.extraImplContext !== undefined && typeof raw.extraImplContext !== "string") {
+		errors.push(`extraImplContext must be a string (got: ${JSON.stringify(raw.extraImplContext)})`);
+	}
+
+	if (errors.length > 0) return { ok: false, errors };
+
+	// Build validated params
+	const params: PipelineLaunchParams = {
+		repo: (raw.repo as string).trim(),
+		worktreeBase: (raw.worktreeBase as string).trim(),
+		ownerRepo: (raw.ownerRepo as string).trim(),
+		aiReviewProvider: (raw.aiReviewProvider as string).trim(),
+		aiReviewApiBase: (raw.aiReviewApiBase as string).trim(),
+		baseBranch: (raw.baseBranch as string).trim(),
+		issues: raw.issues as number[],
+		branches: raw.branches as string[],
+	};
+
+	if (raw.mergeStrategy !== undefined) params.mergeStrategy = raw.mergeStrategy as string;
+	if (raw.reviewLoopCount !== undefined) params.reviewLoopCount = raw.reviewLoopCount as number;
+	if (raw.timeoutImpl !== undefined) params.timeoutImpl = raw.timeoutImpl as number;
+	if (raw.timeoutReview !== undefined) params.timeoutReview = raw.timeoutReview as number;
+	if (raw.timeoutBot !== undefined) params.timeoutBot = raw.timeoutBot as number;
+	if (raw.timeoutCi !== undefined) params.timeoutCi = raw.timeoutCi as number;
+	if (raw.timeoutGate !== undefined) params.timeoutGate = raw.timeoutGate as number;
+	if (raw.handoffPollSeconds !== undefined) params.handoffPollSeconds = raw.handoffPollSeconds as number;
+	if (raw.ciPollSeconds !== undefined) params.ciPollSeconds = raw.ciPollSeconds as number;
+	if (raw.pausePollSeconds !== undefined) params.pausePollSeconds = raw.pausePollSeconds as number;
+	if (raw.deadAgentFlushSeconds !== undefined) params.deadAgentFlushSeconds = raw.deadAgentFlushSeconds as number;
+	if (raw.finalStatusSettleSeconds !== undefined) params.finalStatusSettleSeconds = raw.finalStatusSettleSeconds as number;
+	if (raw.localCoderabbitPrecheck !== undefined) params.localCoderabbitPrecheck = normalizeBoolean(raw.localCoderabbitPrecheck);
+	if (raw.skipReview !== undefined) params.skipReview = normalizeBoolean(raw.skipReview);
+	if (raw.skipBot !== undefined) params.skipBot = normalizeBoolean(raw.skipBot);
+	if (raw.skipScopeGate !== undefined) params.skipScopeGate = normalizeBoolean(raw.skipScopeGate);
+	if (raw.forceIssues !== undefined) params.forceIssues = String(raw.forceIssues);
+	if (raw.noMerge !== undefined) params.noMerge = normalizeBoolean(raw.noMerge);
+	if (raw.continueOnFailure !== undefined) params.continueOnFailure = normalizeBoolean(raw.continueOnFailure);
+	if (raw.extraImplContext !== undefined) params.extraImplContext = raw.extraImplContext as string;
+
+	return { ok: true, params };
+}
+
+/**
+ * Generate a deterministic tmux session name for a new pipeline launch.
+ * Format: impl-pipeline-<repo-name>-<timestamp-safe>
+ */
+export function launchSessionName(repoName: string, ts: string): string {
+	const safeRepo = repoName.replace(/[^A-Za-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 30);
+	const safeTs = ts.replace(/[^A-Za-z0-9]/g, "-").slice(0, 20);
+	return `impl-pipeline-${safeRepo}-${safeTs}`;
+}
+
+/**
+ * Render a shell-sourceable pipeline config file from validated launch params.
+ * All string values are shell-quoted. Arrays use bash array syntax.
+ * extraImplContext has control/newline chars collapsed.
+ */
+export function buildPipelineConfig(params: PipelineLaunchParams, logDir: string): string {
+	const lines: string[] = [
+		`# Pipeline config — generated by pipeline-run extension`,
+		`REPO=${shellQuote(params.repo)}`,
+		`WORKTREE_BASE=${shellQuote(params.worktreeBase)}`,
+		`OWNER_REPO=${shellQuote(params.ownerRepo)}`,
+		`AI_REVIEW_PROVIDER=${shellQuote(params.aiReviewProvider)}`,
+		`AI_REVIEW_API_BASE=${shellQuote(params.aiReviewApiBase)}`,
+		`BASE_BRANCH=${shellQuote(params.baseBranch)}`,
+		`LOG_DIR=${shellQuote(logDir)}`,
+	];
+
+	// ISSUES array
+	lines.push(`ISSUES=(${params.issues.map((n) => String(n)).join(" ")})`);
+
+	// BRANCHES array — each entry shell-quoted
+	const branchEntries = params.branches.map((b) => shellQuote(b)).join(" ");
+	lines.push(`BRANCHES=(${branchEntries})`);
+
+	// Optional string/int fields
+	if (params.mergeStrategy !== undefined) lines.push(`MERGE_STRATEGY=${shellQuote(params.mergeStrategy)}`);
+	if (params.reviewLoopCount !== undefined) lines.push(`REVIEW_LOOP_COUNT=${params.reviewLoopCount}`);
+	if (params.timeoutImpl !== undefined) lines.push(`TIMEOUT_IMPL=${params.timeoutImpl}`);
+	if (params.timeoutReview !== undefined) lines.push(`TIMEOUT_REVIEW=${params.timeoutReview}`);
+	if (params.timeoutBot !== undefined) lines.push(`TIMEOUT_BOT=${params.timeoutBot}`);
+	if (params.timeoutCi !== undefined) lines.push(`TIMEOUT_CI=${params.timeoutCi}`);
+	if (params.timeoutGate !== undefined) lines.push(`TIMEOUT_GATE=${params.timeoutGate}`);
+	if (params.handoffPollSeconds !== undefined) lines.push(`HANDOFF_POLL_SECONDS=${params.handoffPollSeconds}`);
+	if (params.ciPollSeconds !== undefined) lines.push(`CI_POLL_SECONDS=${params.ciPollSeconds}`);
+	if (params.pausePollSeconds !== undefined) lines.push(`PAUSE_POLL_SECONDS=${params.pausePollSeconds}`);
+	if (params.deadAgentFlushSeconds !== undefined) lines.push(`DEAD_AGENT_FLUSH_SECONDS=${params.deadAgentFlushSeconds}`);
+	if (params.finalStatusSettleSeconds !== undefined) lines.push(`FINAL_STATUS_SETTLE_SECONDS=${params.finalStatusSettleSeconds}`);
+
+	// Optional booleans (write as 0/1)
+	if (params.localCoderabbitPrecheck !== undefined) lines.push(`LOCAL_CODERABBIT_PRECHECK=${params.localCoderabbitPrecheck ? 1 : 0}`);
+	if (params.skipReview !== undefined) lines.push(`SKIP_REVIEW=${params.skipReview ? 1 : 0}`);
+	if (params.skipBot !== undefined) lines.push(`SKIP_BOT=${params.skipBot ? 1 : 0}`);
+	if (params.skipScopeGate !== undefined) lines.push(`SKIP_SCOPE_GATE=${params.skipScopeGate ? 1 : 0}`);
+	if (params.noMerge !== undefined) lines.push(`NO_MERGE=${params.noMerge ? 1 : 0}`);
+	if (params.continueOnFailure !== undefined) lines.push(`CONTINUE_ON_FAILURE=${params.continueOnFailure ? 1 : 0}`);
+
+	// forceIssues (string passthrough)
+	if (params.forceIssues !== undefined && params.forceIssues !== "") {
+		lines.push(`FORCE_ISSUES=${shellQuote(params.forceIssues)}`);
+	}
+
+	// extraImplContext: collapse control chars and newlines
+	if (params.extraImplContext !== undefined && params.extraImplContext !== "") {
+		const safe = params.extraImplContext
+			.replace(/[\x00-\x1F\x7F]+/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+		if (safe !== "") lines.push(`EXTRA_IMPL_CONTEXT=${shellQuote(safe)}`);
+	}
+
+	return lines.join("\n") + "\n";
+}
+
+/**
+ * Plan a single launch action — pure, no I/O.
+ * Returns the action type along with the session name, shell command, and paths.
+ */
+export function planLaunchAction(
+	params: PipelineLaunchParams,
+	scriptPath: string,
+	ts: string,
+	existingSessions: Set<string>,
+	maxAttempts = 5,
+): PlanLaunchAction {
+	const repoName = basename(params.repo);
+	let sessionName = launchSessionName(repoName, ts);
+	let attempt = 0;
+	while (existingSessions.has(sessionName)) {
+		attempt++;
+		if (attempt >= maxAttempts) {
+			return { type: "session-exists", sessionName, suffix: attempt };
+		}
+		sessionName = launchSessionName(repoName, `${ts}-${attempt}`);
+	}
+	const logDir = `/tmp/${sessionName}`;
+	const configPath = `${logDir}/config.sh`;
+	const shellCmd = `${shellQuote(scriptPath)} ${shellQuote(configPath)}; exec bash`;
+	return { type: "launch", sessionName, configPath, logDir, shellCmd, scriptPath };
+}
+
+/**
+ * Parse /pipeline-run command args: JSON object (preferred) or key=value pairs.
+ * issues=1,2,3 and branches=a,b,c are parsed as arrays.
+ * Returns a partial params record for further validation.
+ */
+export function parsePipelineRunArgs(args: string): ParseResult {
+	if (!args || args.trim() === "") {
+		return {
+			ok: false,
+			error: "No arguments provided. Usage: /pipeline-run <JSON> or key=value pairs. Required: repo, worktreeBase, ownerRepo, aiReviewProvider, aiReviewApiBase, baseBranch, issues, branches.",
+		};
+	}
+
+	const trimmed = args.trim();
+
+	// Try JSON object first
+	if (trimmed.startsWith("{")) {
+		try {
+			const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+			return { ok: true, params: normalizeKvTypes(parsed) };
+		} catch (e) {
+			return { ok: false, error: `Invalid JSON: ${String(e)}` };
+		}
+	}
+
+	// key=value parsing
+	const result: Record<string, unknown> = {};
+	const pairs = trimmed.match(/\S+=[^\s]*/g) ?? [];
+	if (pairs.length === 0) {
+		return { ok: false, error: `Cannot parse args as JSON or key=value pairs: ${trimmed.slice(0, 80)}` };
+	}
+	for (const pair of pairs) {
+		const eqIdx = pair.indexOf("=");
+		if (eqIdx < 0) continue;
+		const key = pair.slice(0, eqIdx);
+		const val = pair.slice(eqIdx + 1);
+		// issues and branches are comma-separated arrays
+		if (key === "issues") {
+			result[key] = val.split(",").filter(Boolean).map((v) => Number(v.trim()));
+		} else if (key === "branches") {
+			result[key] = val.split(",").filter(Boolean).map((v) => v.trim());
+		} else {
+			result[key] = val;
+		}
+	}
+	return { ok: true, params: normalizeKvTypes(result) };
+}
+
+/** Coerce string representations of numbers/booleans from JSON/kv parsing. */
+function normalizeKvTypes(raw: Record<string, unknown>): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(raw)) {
+		if (typeof v === "string") {
+			if (v === "true") { out[k] = true; continue; }
+			if (v === "false") { out[k] = false; continue; }
+			const asNum = Number(v);
+			if (v !== "" && Number.isFinite(asNum) && NUMERIC_KEYS.has(k)) { out[k] = asNum; continue; }
+			if ((v === "0" || v === "1") && BOOLEAN_KEYS.has(k)) { out[k] = Number(v); continue; }
+		}
+		out[k] = v;
+	}
+	return out;
+}
+
+const NUMERIC_KEYS = new Set([
+	"reviewLoopCount", "timeoutImpl", "timeoutReview", "timeoutBot", "timeoutCi", "timeoutGate",
+	"handoffPollSeconds", "ciPollSeconds", "pausePollSeconds", "deadAgentFlushSeconds", "finalStatusSettleSeconds",
+]);
+
+const BOOLEAN_KEYS = new Set([
+	"localCoderabbitPrecheck", "skipReview", "skipBot", "skipScopeGate", "noMerge", "continueOnFailure",
+]);
+
+function normalizeBoolean(value: unknown): boolean {
+	return value === true || value === 1;
+}
+
+// ─── Pipeline Launch: I/O (not pure; used by command and tool handlers) ────────
+
+/**
+ * Resolve the pipeline.sh path relative to this extension file.
+ */
+function pipelineScriptPath(): string {
+	// __filename in ESM-style: use import.meta.url when available, otherwise fallback
+	try {
+		const thisFile = fileURLToPath(import.meta.url);
+		return resolve(dirname(thisFile), "../skills/implementation-pipeline/pipeline.sh");
+	} catch (error) {
+		throw new Error(`pipeline-status extension: cannot resolve pipeline.sh path from import.meta.url: ${String(error)}`);
+	}
+}
+
+/**
+ * Format a launch success result as a human-readable summary.
+ */
+function formatLaunchSummary(result: LaunchSessionResult & { ok: true }): string {
+	return [
+		`Implementation pipeline launched.`,
+		`  Session: ${result.attachCmd}`,
+		`  Config:  ${result.configPath}`,
+		`  Log:     tail -f ${result.logFile}`,
+		`  Status:  cat ${result.statusFile}`,
+		`  Control: echo pause > ${result.controlFile}`,
+		`  Issues:  ${result.issues.map((n) => `#${n}`).join(", ")}`,
+	].join("\n");
+}
+
+/**
+ * Execute a pipeline launch: write config, check tmux, check/unique session, spawn.
+ * Returns success with session/config/log info or an error message.
+ */
+async function executeLaunch(
+	pi: ExtensionAPI,
+	params: PipelineLaunchParams,
+	scriptPath: string,
+): Promise<LaunchSessionResult> {
+	// Check tmux availability
+	const whichResult = await pi.exec("which", ["tmux"], { timeout: 3000 });
+	if (whichResult.code !== 0) {
+		return { ok: false, error: "tmux is not available. Cannot launch pipeline in detached session." };
+	}
+
+	// Generate timestamp-based session name
+	const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "T").slice(0, 20).replace(/[^A-Za-z0-9]/g, "-");
+
+	const MAX_ATTEMPTS = 5;
+	const existingSessions = new Set<string>();
+	let action: PlanLaunchAction | undefined;
+	while (true) {
+		action = planLaunchAction(params, scriptPath, ts, existingSessions, MAX_ATTEMPTS);
+		if (action.type !== "launch") {
+			return { ok: false, error: `Could not find a unique session name after ${MAX_ATTEMPTS} attempts (last tried: ${action.sessionName}).` };
+		}
+		const hasSession = await pi.exec("tmux", ["has-session", "-t", action.sessionName], { timeout: 3000 });
+		if (hasSession.code !== 0) break;
+		existingSessions.add(action.sessionName);
+	}
+
+	const sessionName = action.sessionName;
+	const logDir = action.logDir;
+	const configPath = action.configPath;
+	const logFile = `${logDir}/loop.log`;
+	const statusFile = `${logDir}/status.json`;
+	const controlFile = `${logDir}/control`;
+	const attachCmd = `tmux attach -t ${sessionName}`;
+
+	// Write config file
+	try {
+		await mkdir(logDir, { recursive: true });
+		const configContent = buildPipelineConfig(params, logDir);
+		await writeFile(configPath, configContent, { encoding: "utf8", mode: 0o600 });
+	} catch (e) {
+		return { ok: false, error: `Failed to write config to ${configPath}: ${String(e)}` };
+	}
+
+	// Launch detached tmux session
+	const spawnResult = await pi.exec("tmux", ["new-session", "-d", "-s", sessionName, action.shellCmd], { timeout: 10000 });
+	if (spawnResult.code !== 0) {
+		return { ok: false, error: `tmux new-session failed: ${spawnResult.stderr.trim() || "unknown error"}` };
+	}
+
+	return { ok: true, sessionName, configPath, logDir, logFile, statusFile, controlFile, attachCmd, issues: params.issues };
 }
