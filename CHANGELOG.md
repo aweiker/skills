@@ -2,6 +2,22 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.3] - 2026-07-01
+
+### Added
+
+- **Extension-owned pipeline launcher** — `pipeline-status` now registers `/pipeline-run` and the
+  LLM-callable `pipeline_run` tool so implementation pipelines launch through a validated,
+  detached tmux entrypoint instead of model-generated bash. The launcher writes a shell-safe config
+  under `/tmp/<session>/config.sh`, sets `LOG_DIR` to the same session directory, checks tmux
+  availability/session uniqueness, and returns the attach, config, log, status, and control paths.
+- **Launch helper tests and docs** — pure launch helpers cover parameter validation, config
+  rendering, shell quoting, command parsing, and session planning; implementation-pipeline docs now
+  prefer `pipeline_run` or `/pipeline-run` and treat direct `pipeline.sh` launch as an explicitly
+  approved fallback only.
+
+---
+
 ## [0.2.2] - 2026-06-30
 
 ### Fixed

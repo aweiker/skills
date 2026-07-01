@@ -21,7 +21,7 @@ in `package.json`.
 Install from git:
 
 ```bash
-pi install git:git@github.com:aweiker/skills.git@v0.2.2
+pi install git:git@github.com:aweiker/skills.git@v0.2.3
 ```
 
 For local development on this machine, the checkout can be installed directly:
