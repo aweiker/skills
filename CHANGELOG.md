@@ -2,6 +2,29 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.4] - 2026-07-02
+
+### Added
+
+- **Pipeline status hide/show controls** — `/pipeline-status hide`, `/pipeline-status show`,
+  `/pipeline-hide`, and `/pipeline-show` let a session hide the pipeline widget without stopping
+  polling or losing tracked pipeline state.
+- **Pipeline status help** — `/pipeline-status --help`, `-h`, and `help` now render command usage
+  before any repo refresh, including shortcuts, `p1`/`p2` handles, full IDs, and unique prefixes.
+
+### Changed
+
+- **Compact pipeline widget UX** — the below-editor widget now uses a single compact line with
+  colored state icons, current item duration, total pipeline duration, progress, next issue, and PR
+  number; it removes the heading, verbose controls list, and duplicate footer/status-line rendering.
+- **Right-aligned status hint** — the dim `/pipeline-status` hint is rendered with a width-aware
+  widget component so it aligns to the right edge when the terminal is wide enough and falls back to
+  the normal separator when space is constrained.
+- **Pipeline value emphasis** — key runtime values use normal text emphasis while labels and
+  separators stay dim, making the compact status easier to scan without relying on color alone.
+
+---
+
 ## [0.2.3] - 2026-07-01
 
 ### Added

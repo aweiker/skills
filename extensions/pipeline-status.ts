@@ -87,7 +87,19 @@ type PipelineView = {
 	phase: string;
 	phaseElapsed: string;
 	issueElapsed: string;
+	totalElapsed: string;
 };
+
+type WidgetComponentLike = {
+	render: (width: number) => string[];
+	invalidate: () => void;
+	dispose?: () => void;
+};
+
+type WidgetFactoryLike = (
+	tui: { requestRender: () => void },
+	theme: { fg: (color: string, text: string) => string },
+) => WidgetComponentLike;
 
 type ExtensionContextLike = {
 	cwd: string;
@@ -98,7 +110,7 @@ type ExtensionContextLike = {
 			fg: (color: string, text: string) => string;
 		};
 		setStatus: (key: string, value?: string) => void;
-		setWidget: (key: string, value?: string[], options?: { placement?: "aboveEditor" | "belowEditor" }) => void;
+		setWidget: (key: string, value?: string[] | WidgetFactoryLike, options?: { placement?: "aboveEditor" | "belowEditor" }) => void;
 		custom?: <T>(factory: (tui: { requestRender: () => void }, theme: { fg: (color: string, text: string) => string }, keybindings: unknown, done: (value: T) => void) => unknown) => Promise<T>;
 		notify: (message: string, level?: NotifyLevel) => void;
 		confirm: (title: string, message: string) => Promise<boolean>;
@@ -112,6 +124,7 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 	let timer: NodeJS.Timeout | undefined;
 	let currentRepo: string | null = null;
 	let pipelines: PipelineView[] = [];
+	let statusHidden = false;
 	const pendingCommands = new Map<string, string>();
 
 	async function refresh(ctx: ExtensionContextLike): Promise<void> {
@@ -141,15 +154,27 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 		timer = undefined;
 		currentRepo = null;
 		pipelines = [];
+		statusHidden = false;
 		if (ctx.hasUI) clearUI(ctx as ExtensionContextLike);
 	});
 
 	pi.registerCommand("pipeline-status", {
-		description: "Show implementation pipeline status for the current repo; supports subcommands: pause, resume, skip, abort, dismiss, log",
+		description: "Show implementation pipeline status for the current repo; use --help for supported options",
 		handler: async (args, ctx) => {
-			await refresh(ctx as ExtensionContextLike);
 			const [actionRaw, id] = splitArgs(args);
 			const action = actionRaw || "show";
+			if (isHelpAction(action)) {
+				notify(ctx as ExtensionContextLike, pipelineStatusHelpText(), "info");
+				return;
+			}
+			if (action === "hide") {
+				statusHidden = true;
+				clearUI(ctx as ExtensionContextLike);
+				notify(ctx as ExtensionContextLike, "Pipeline status hidden for this session. Use /pipeline-status show or /pipeline-show to restore it.", "info");
+				return;
+			}
+
+			await refresh(ctx as ExtensionContextLike);
 			switch (action) {
 				case "show":
 				case "list":
@@ -196,6 +221,24 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			await refresh(ctx as ExtensionContextLike);
 			await showLog(ctx as ExtensionContextLike, args.trim() || undefined);
+		},
+	});
+
+	pi.registerCommand("pipeline-hide", {
+		description: "Hide the implementation pipeline status widget for this session",
+		handler: async (_args, ctx) => {
+			statusHidden = true;
+			clearUI(ctx as ExtensionContextLike);
+			notify(ctx as ExtensionContextLike, "Pipeline status hidden for this session. Use /pipeline-show to restore it.", "info");
+		},
+	});
+
+	pi.registerCommand("pipeline-show", {
+		description: "Show the implementation pipeline status widget for this session",
+		handler: async (_args, ctx) => {
+			statusHidden = false;
+			await refresh(ctx as ExtensionContextLike);
+			showStatus(ctx as ExtensionContextLike);
 		},
 	});
 
@@ -341,6 +384,7 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 				phase,
 				phaseElapsed: elapsedSince(status?.current_phase_started_at),
 				issueElapsed: elapsedIssue(status),
+				totalElapsed: elapsedSince(status?.started_at),
 			});
 		}
 		return views;
@@ -348,73 +392,80 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 
 	function render(ctx: ExtensionContextLike): void {
 		if (!ctx.hasUI) return;
-		if (pipelines.length === 0) {
+		if (statusHidden || pipelines.length === 0) {
 			clearUI(ctx);
 			return;
 		}
 
-		ctx.ui.setStatus(STATUS_KEY, footerText(ctx));
-		ctx.ui.setWidget(WIDGET_KEY, widgetLines(ctx), { placement: "belowEditor" });
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		ctx.ui.setWidget(WIDGET_KEY, (_tui, _theme) => ({
+			render(width: number): string[] {
+				return widgetLines(ctx, width);
+			},
+			invalidate() {},
+		}), { placement: "belowEditor" });
 	}
 
-	function footerText(ctx: ExtensionContextLike): string {
-		const active = pipelines.filter((pipeline) => pipeline.state === "running" || pipeline.state === "starting" || pipeline.state === "paused");
-		const terminal = pipelines.length - active.length;
-		const theme = ctx.ui.theme;
-		if (active.length === 1) {
-			const pipeline = active[0]!;
-			if (pipeline.state === "paused") {
-				const next = pipeline.status?.next_issue ? `#${pipeline.status.next_issue}` : "unknown";
-				return color(theme, "accent", "pipeline:") + " " + color(theme, "dim", `⏸ paused before ${next}`);
-			}
-			const issue = pipeline.status?.current_issue ? `#${pipeline.status.current_issue}` : "no issue";
-			const issueAge = pipeline.issueElapsed === "unknown" ? "" : ` issue age ${pipeline.issueElapsed}`;
-			return color(theme, "accent", "pipeline:") + " " + color(theme, "dim", `${issue} ${pipeline.phase}${issueAge}`);
-		}
-		if (active.length > 1) {
-			return color(theme, "accent", "pipelines:") + " " + color(theme, "dim", `${active.length} active${terminal ? `, ${terminal} terminal` : ""}`);
-		}
-		return color(theme, "success", "pipeline:") + " " + color(theme, "dim", `${terminal} complete/terminal; dismiss when done`);
-	}
-
-	function widgetLines(ctx: ExtensionContextLike): string[] {
-		const theme = ctx.ui.theme;
-		const lines = [color(theme, "accent", "── Implementation Pipeline Status ──")];
+	function widgetLines(ctx: ExtensionContextLike, width?: number): string[] {
+		const lines: string[] = [];
+		const includeHandle = pipelines.length > 1;
 		for (const pipeline of pipelines) {
-			const status = pipeline.status;
-			const issue = status?.current_issue ? `#${status.current_issue}` : "-";
-			const pr = status?.current_pr ? ` PR #${status.current_pr}` : "";
-			const completed = completedIssueDetails(status);
-			const skipped = status?.issues_skipped ?? [];
-			const remaining = status?.issues_remaining ?? [];
-			const pending = pendingCommands.get(pipeline.id);
-			const indicator = stateIndicator(pipeline.state);
-			const issueAge = pipeline.issueElapsed === "unknown" ? "" : ` · issue age ${pipeline.issueElapsed}`;
-			const nextIssue = status?.next_issue ? `#${status.next_issue}` : "unknown";
-			const active = pipeline.terminal
-				? `${indicator} ${pipeline.repoName} ${pipeline.state}`
-				: pipeline.state === "paused"
-					? `${indicator} paused: before ${nextIssue}`
-					: `${indicator} active: ${issue} ${pipeline.phase}${issueAge} · phase ${pipeline.phaseElapsed}${pr}`;
-			lines.push(`${active}${pending ? ` (${pending} pending)` : ""}`);
+			lines.push(compactPipelineLine(ctx, pipeline, { includeStatusHint: true, includeHandle, width }));
 			if (pipeline.state === "blocked") {
 				const resumeErr = formatResumeError(pipeline.status?.resume_error);
 				if (resumeErr !== null) {
-					lines.push(color(theme, "dim", `   resume error: ${resumeErr}`));
+					lines.push(color(theme, "dim", `  resume error: ${resumeErr}`));
 				}
 			}
-			const controls = pipeline.terminal
-				? `dismiss: /pipeline-dismiss ${pipeline.id}`
-				: pipeline.state === "paused"
-					? `controls: /pipeline-resume ${pipeline.id} | /pipeline-abort ${pipeline.id}`
-					: `controls: /pipeline-pause ${pipeline.id} | /pipeline-skip ${pipeline.id} | /pipeline-abort ${pipeline.id}`;
-
-			lines.push(color(theme, "dim", `   completed: ${formatCompleted(completed)}`));
-			lines.push(color(theme, "dim", `   remaining: ${formatIssueList(remaining)}${skipped.length ? ` · skipped: ${formatIssueList(skipped)}` : ""}`));
-			lines.push(color(theme, "dim", `   log: ${pipeline.logFile}`));
-			lines.push(color(theme, pipeline.terminal ? "muted" : "dim", `   ${controls}`));
 		}
 		return lines;
+	}
+
+	function compactPipelineLine(
+		ctx: ExtensionContextLike,
+		pipeline: PipelineView,
+		options: { includeStatusHint: boolean; includeHandle: boolean; width?: number },
+	): string {
+		const theme = ctx.ui.theme;
+		const handle = options.includeHandle ? `${pipelineHandle(pipeline)} ` : "";
+		const icon = coloredStateIndicator(theme, pipeline.state);
+		const pending = pendingCommands.get(pipeline.id);
+		const details = compactPipelineDetails(theme, pipeline);
+		const pendingText = pending ? `${color(theme, "dim", " (")}${emphasis(theme, pending)}${color(theme, "dim", " pending)")}` : "";
+		const line = `${color(theme, "dim", handle)}${icon} ${details}${pendingText}`;
+		if (!options.includeStatusHint) return line;
+		return appendRightAlignedHint(line, color(theme, "dim", "/pipeline-status"), options.width, separator(theme));
+	}
+
+	function compactPipelineDetails(theme: { fg: (color: string, text: string) => string } | undefined, pipeline: PipelineView): string {
+		const status = pipeline.status;
+		const next = nextIssueLabel(status);
+		const total = pipeline.totalElapsed === "unknown" ? keyValue(theme, "total", "unknown") : keyValue(theme, "total", pipeline.totalElapsed);
+		const progress = emphasis(theme, progressLabel(status));
+		if (pipeline.terminal) {
+			return [emphasis(theme, stateWord(pipeline.state)), total, progress].join(separator(theme));
+		}
+		if (pipeline.state === "paused") {
+			const paused = next ? `${emphasis(theme, "paused")} ${label(theme, "before")} ${emphasis(theme, next)}` : emphasis(theme, "paused");
+			return [paused, total, progress].join(separator(theme));
+		}
+		const issue = status?.current_issue ? `#${status.current_issue}` : "no issue";
+		const phase = compactPhase(pipeline.phase);
+		const issueAndPhase = phase ? `${emphasis(theme, issue)} ${color(theme, "accent", phase)}` : emphasis(theme, issue);
+		const item = pipeline.issueElapsed === "unknown" ? keyValue(theme, "item", "unknown") : keyValue(theme, "item", pipeline.issueElapsed);
+		const parts = [issueAndPhase, item, total, progress];
+		if (next) parts.push(`${label(theme, "next")} ${emphasis(theme, next)}`);
+		if (status?.current_pr) parts.push(`${label(theme, "PR")} ${emphasis(theme, `#${status.current_pr}`)}`);
+		return parts.join(separator(theme));
+	}
+
+	function pipelineHandle(pipeline: PipelineView): string {
+		const index = pipelines.indexOf(pipeline);
+		return index >= 0 ? `p${index + 1}` : pipeline.id;
+	}
+
+	function coloredStateIndicator(theme: { fg: (color: string, text: string) => string } | undefined, state: string): string {
+		return color(theme, stateColorName(state), stateIndicator(state));
 	}
 
 	async function resumePipeline(ctx: ExtensionContextLike, pipeline: PipelineView): Promise<void> {
@@ -591,6 +642,7 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 	}
 
 	function showStatus(ctx: ExtensionContextLike): void {
+		statusHidden = false;
 		if (pipelines.length === 0) {
 			notify(ctx, "No implementation pipelines found for this repo.", "info");
 			return;
@@ -610,6 +662,15 @@ export default function pipelineStatusExtension(pi: ExtensionAPI) {
 		});
 
 		if (id) {
+			const handleMatch = id.match(/^p([1-9][0-9]*)$/i);
+			if (handleMatch) {
+				const pipeline = pipelines[Number(handleMatch[1]) - 1];
+				if (!pipeline || !candidates.includes(pipeline)) {
+					notify(ctx, `No matching pipeline found for handle '${id}'.`, "error");
+					return undefined;
+				}
+				return pipeline;
+			}
 			const pipeline = candidates.find((item) => item.id === id || item.id.startsWith(id));
 			if (!pipeline) notify(ctx, `No matching pipeline found for id '${id}'.`, "error");
 			return pipeline;
@@ -642,6 +703,35 @@ function parsePollMs(raw: string | undefined): number {
 function splitArgs(args: string): [string | undefined, string | undefined] {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
 	return [parts[0], parts[1]];
+}
+
+function isHelpAction(action: string): boolean {
+	return action === "--help" || action === "-h" || action === "help";
+}
+
+export function pipelineStatusHelpText(): string {
+	return [
+		"/pipeline-status usage:",
+		"  /pipeline-status [show|list]              Show compact pipeline status for this repo.",
+		"  /pipeline-status hide                     Hide pipeline status for this session.",
+		"  /pipeline-status pause [id|pN]            Pause the selected running pipeline after the current issue.",
+		"  /pipeline-status resume [id|pN]           Resume a paused pipeline.",
+		"  /pipeline-status skip [id|pN]             Skip the current pipeline issue after confirmation.",
+		"  /pipeline-status abort [id|pN]            Abort the selected pipeline after confirmation.",
+		"  /pipeline-status dismiss [id|pN]          Dismiss a terminal pipeline from the widget.",
+		"  /pipeline-status log [id|pN]              Open/tail the selected pipeline log.",
+		"  /pipeline-status --help|-h|help           Show this help.",
+		"",
+		"Shortcuts:",
+		"  /pipeline-pause [id|pN]    /pipeline-resume [id|pN]",
+		"  /pipeline-skip [id|pN]     /pipeline-abort [id|pN]",
+		"  /pipeline-log [id|pN]      /pipeline-dismiss [id|pN]",
+		"  /pipeline-hide             /pipeline-show",
+		"",
+		"Target selection:",
+		"  Omit id when only one pipeline matches. Use short handles like p1/p2 from the widget,",
+		"  a full pipeline id, or a unique pipeline id prefix when multiple pipelines are visible.",
+	].join("\n");
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {
@@ -685,6 +775,19 @@ function truncatePlain(text: string, width: number): string {
 	return text.slice(0, width - 1) + "…";
 }
 
+export function visibleTextLength(text: string): number {
+	return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").length;
+}
+
+export function appendRightAlignedHint(line: string, hint: string, width: number | undefined, fallbackSeparator = " · "): string {
+	if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) {
+		return `${line}${fallbackSeparator}${hint}`;
+	}
+	const gap = Math.floor(width) - visibleTextLength(line) - visibleTextLength(hint);
+	if (gap >= 1) return `${line}${" ".repeat(gap)}${hint}`;
+	return `${line}${fallbackSeparator}${hint}`;
+}
+
 function elapsedSince(iso: string | null | undefined, nowMs = Date.now()): string {
 	if (!iso) return "unknown";
 	const started = Date.parse(iso);
@@ -726,6 +829,57 @@ function formatCompleted(items: CompletedIssue[]): string {
 function formatIssueList(items: number[]): string {
 	if (items.length === 0) return "none";
 	return items.map((issue) => `#${issue}`).join(", ");
+}
+
+function progressLabel(status: PipelineStatus | undefined): string {
+	const done = completedIssueDetails(status).length;
+	const total = status?.issues_total?.length ?? 0;
+	return total > 0 ? `${done}/${total} done` : `${done} done`;
+}
+
+function nextIssueLabel(status: PipelineStatus | undefined): string {
+	const next = status?.next_issue ?? status?.issues_remaining?.[0];
+	return typeof next === "number" && Number.isFinite(next) ? `#${next}` : "";
+}
+
+function compactPhase(phase: string): string {
+	switch (phase) {
+		case "implementation":
+			return "impl";
+		case "self-review":
+			return "review";
+		case "bot-review":
+			return "bot";
+		case "scope-gate":
+			return "scope";
+		case "worktree-setup":
+			return "setup";
+		case "tracker-checkpoint":
+			return "tracker";
+		case "merging":
+			return "merge";
+		case "-":
+		case "":
+			return "";
+		default:
+			return phase;
+	}
+}
+
+function stateWord(state: string): string {
+	switch (state) {
+		case "completed":
+			return "completed";
+		case "aborted":
+		case "killed":
+			return "stopped";
+		case "crashed":
+			return "crashed";
+		case "blocked":
+			return "blocked";
+		default:
+			return state || "unknown";
+	}
 }
 
 /**
@@ -785,7 +939,7 @@ async function fileHasContent(path: string): Promise<boolean> {
 	}
 }
 
-function stateIndicator(state: string): string {
+export function stateIndicator(state: string): string {
 	switch (state) {
 		case "running":
 		case "starting":
@@ -799,9 +953,28 @@ function stateIndicator(state: string): string {
 		case "aborted":
 		case "killed":
 		case "crashed":
-			return "✗";
+			return "■";
 		default:
-			return "?";
+			return "○";
+	}
+}
+
+export function stateColorName(state: string): string {
+	switch (state) {
+		case "running":
+		case "starting":
+			return "accent";
+		case "paused":
+		case "blocked":
+			return "warning";
+		case "completed":
+			return "success";
+		case "aborted":
+		case "killed":
+		case "crashed":
+			return "error";
+		default:
+			return "muted";
 	}
 }
 
@@ -835,6 +1008,22 @@ function notify(ctx: ExtensionContextLike, message: string, level: NotifyLevel):
 
 function color(theme: { fg: (color: string, text: string) => string } | undefined, colorName: string, text: string): string {
 	return theme ? theme.fg(colorName, text) : text;
+}
+
+function emphasis(theme: { fg: (color: string, text: string) => string } | undefined, text: string): string {
+	return color(theme, "text", text);
+}
+
+function label(theme: { fg: (color: string, text: string) => string } | undefined, text: string): string {
+	return color(theme, "dim", text);
+}
+
+function separator(theme: { fg: (color: string, text: string) => string } | undefined): string {
+	return color(theme, "dim", " · ");
+}
+
+function keyValue(theme: { fg: (color: string, text: string) => string } | undefined, key: string, value: string): string {
+	return `${label(theme, key)} ${emphasis(theme, value)}`;
 }
 
 // ─── Exported pure helpers ──────────────────────────────────────────────────

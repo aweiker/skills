@@ -26,6 +26,24 @@ const extFile = path.join(repoRoot, "extensions", "pipeline-status.ts");
 let shellQuote, resumeSessionName, manualResumeCommand;
 
 // ── Subprocess helper: call planResumeAction with a serialised input ─────────
+function callAppendRightAlignedHint(line, hint, width, fallbackSeparator) {
+  const fallbackArg = fallbackSeparator === undefined ? "" : `, ${JSON.stringify(fallbackSeparator)}`;
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module"],
+    {
+      input: `
+import { appendRightAlignedHint, visibleTextLength } from ${JSON.stringify(extFile)};
+const rendered = appendRightAlignedHint(${JSON.stringify(line)}, ${JSON.stringify(hint)}, ${JSON.stringify(width)}${fallbackArg});
+process.stdout.write(JSON.stringify({ rendered, visible: visibleTextLength(rendered) }));
+`,
+      encoding: "utf8",
+      timeout: 10000,
+    }
+  );
+  return JSON.parse(result);
+}
+
 function callPlanResumeAction(input) {
   const result = execFileSync(
     process.execPath,
@@ -239,6 +257,37 @@ assertEqual(
   d.manualResumeCommand_both_undefined
 );
 
+// pipelineStatusHelpText
+console.log("\n=== pipelineStatusHelpText ===");
+function callPipelineStatusHelpText() {
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module"],
+    {
+      input: `
+import { pipelineStatusHelpText } from ${JSON.stringify(extFile)};
+process.stdout.write(JSON.stringify(pipelineStatusHelpText()));
+`,
+      encoding: "utf8",
+      timeout: 10000,
+    }
+  );
+  return JSON.parse(result);
+}
+{
+  const help = callPipelineStatusHelpText();
+  assertIncludes("help: usage header", help, "/pipeline-status usage:");
+  for (const action of ["show", "list", "hide", "pause", "resume", "skip", "abort", "dismiss", "log"]) {
+    assertIncludes(`help: includes ${action}`, help, action);
+  }
+  assertIncludes("help: includes --help", help, "--help");
+  assertIncludes("help: includes shortcut /pipeline-pause", help, "/pipeline-pause");
+  assertIncludes("help: includes shortcut /pipeline-hide", help, "/pipeline-hide");
+  assertIncludes("help: includes shortcut /pipeline-show", help, "/pipeline-show");
+  assertIncludes("help: documents pN handles", help, "p1/p2");
+  assertIncludes("help: documents unique id prefixes", help, "unique pipeline id prefix");
+}
+
 // Static assertions on extension source
 console.log("\n=== Static source checks (pipeline-status.ts) ===");
 const src = readFileSync(extFile, "utf8");
@@ -288,6 +337,94 @@ assertIncludes(
   src,
   'startsWith("/")'
 );
+assertNotIncludes(
+  "source: compact widget does not render a heading",
+  src,
+  "── Pipeline ──"
+);
+assertIncludes(
+  "source: compact item timer label is used",
+  src,
+  'keyValue(theme, "item", pipeline.issueElapsed)'
+);
+assertIncludes(
+  "source: compact total timer label is used",
+  src,
+  'keyValue(theme, "total", pipeline.totalElapsed)'
+);
+assertIncludes(
+  "source: compact status emphasizes key values with theme text token",
+  src,
+  'return color(theme, "text", text)'
+);
+assertIncludes(
+  "source: /pipeline-status --help is handled before refresh",
+  src,
+  "if (isHelpAction(action))"
+);
+assertIncludes(
+  "source: /pipeline-status hide is handled before refresh",
+  src,
+  'if (action === "hide")'
+);
+assertIncludes(
+  "source: render clears UI while statusHidden",
+  src,
+  "if (statusHidden || pipelines.length === 0)"
+);
+assertIncludes(
+  "source: /pipeline-hide shortcut is registered",
+  src,
+  'pi.registerCommand("pipeline-hide"'
+);
+assertIncludes(
+  "source: /pipeline-show shortcut is registered",
+  src,
+  'pi.registerCommand("pipeline-show"'
+);
+assertIncludes(
+  "source: compact widget dims /pipeline-status hint",
+  src,
+  'color(theme, "dim", "/pipeline-status")'
+);
+assertIncludes(
+  "source: widget uses width-aware renderer",
+  src,
+  "render(width: number): string[]"
+);
+assertIncludes(
+  "source: compact widget right-aligns /pipeline-status hint",
+  src,
+  "appendRightAlignedHint(line, color(theme, \"dim\", \"/pipeline-status\"), options.width"
+);
+assertNotIncludes(
+  "source: compact widget does not show verbose controls label",
+  src,
+  'label(theme, "controls:")'
+);
+assertNotIncludes(
+  "source: compact widget does not render verbose controls helper",
+  src,
+  "compactControls"
+);
+assertIncludes(
+  "source: short pN handles are available",
+  src,
+  "function pipelineHandle"
+);
+
+console.log("\n=== compact widget right-aligned hint ===");
+{
+  const result = callAppendRightAlignedHint("● #199 bot", "\x1b[2m/pipeline-status\x1b[0m", 40, " · ");
+  assertEqual("right-aligned hint: visible width matches widget width", 40, result.visible);
+  assertIncludes("right-aligned hint: preserves dimmed hint", result.rendered, "\x1b[2m/pipeline-status\x1b[0m");
+  assertIncludes("right-aligned hint: pads before hint", result.rendered, "          \x1b[2m/pipeline-status");
+}
+{
+  const result = callAppendRightAlignedHint("● #199 bot", "/pipeline-status", 10, " · ");
+  assertEqual("narrow width: falls back to separator", "● #199 bot · /pipeline-status", result.rendered);
+}
+
 assertIncludes(
   "source: tmux attach attach hint in spawn-success message",
   src,
@@ -633,6 +770,40 @@ process.stdout.write(JSON.stringify(classifyState(${JSON.stringify(rawState)}, $
   );
 }
 
+// ── Compact status icon/color helpers ────────────────────────────────────────
+console.log("\n=== Compact status icon/color helpers ===");
+
+function callStatePresentation(state) {
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module"],
+    {
+      input: `
+import { stateIndicator, stateColorName } from ${JSON.stringify(extFile)};
+process.stdout.write(JSON.stringify({ icon: stateIndicator(${JSON.stringify(state)}), color: stateColorName(${JSON.stringify(state)}) }));
+`,
+      encoding: "utf8",
+      timeout: 10000,
+    }
+  );
+  return JSON.parse(result);
+}
+
+for (const [state, icon, color] of [
+  ["running", "●", "accent"],
+  ["starting", "●", "accent"],
+  ["paused", "⏸", "warning"],
+  ["completed", "✓", "success"],
+  ["aborted", "■", "error"],
+  ["killed", "■", "error"],
+  ["crashed", "■", "error"],
+  ["unknown", "○", "muted"],
+]) {
+  const result = callStatePresentation(state);
+  assertEqual(`${state}: icon`, icon, result.icon);
+  assertEqual(`${state}: color`, color, result.color);
+}
+
 // ── Phase 5H: Static checks for resume_error / formatResumeError ──────────────
 console.log("\n=== Static source checks — Phase 5H (resume_error / formatResumeError) ===");
 
@@ -656,17 +827,16 @@ assertIncludes(
   src,
   'pipeline.state === "blocked"'
 );
-// footerText must not reference resume_error — extract function body heuristically
-{
-  const ftStart = src.indexOf("function footerText(");
-  const ftEnd = src.indexOf("\n\tfunction ", ftStart + 1);
-  const footerBody = ftEnd > ftStart ? src.slice(ftStart, ftEnd) : src.slice(ftStart, ftStart + 3000);
-  assertNotIncludes(
-    "footerText body: does not reference resume_error",
-    footerBody,
-    "resume_error"
-  );
-}
+assertNotIncludes(
+  "source: footer status renderer has been removed",
+  src,
+  "function footerText("
+);
+assertIncludes(
+  "source: render clears the footer status slot before setting widget",
+  src,
+  "ctx.ui.setStatus(STATUS_KEY, undefined);\n\t\tctx.ui.setWidget"
+);
 
 // ── Phase 5H: formatResumeError pure helper tests ───────────────────────────
 console.log("\n=== formatResumeError pure helper ===");
