@@ -1067,6 +1067,94 @@ generate_impl_prompt() {
   fi
 }
 
+generate_ci_investigation_prompt() {
+  local pr="$1" owner_repo="$2" handoff="$3"
+  cat <<EOF
+You are a CI failure investigator. A PR's CI run has failed. Your job is to determine
+whether the failure is a transient infrastructure problem or a real code defect introduced
+by this PR's changes.
+
+## Context
+- PR: #${pr} on ${owner_repo}
+- Handoff file (write your verdict here): ${handoff}
+
+## Your task
+
+1. Run: gh pr checks ${pr} --repo ${owner_repo}
+   to identify which jobs failed.
+
+2. For each failed job, get the run ID and fetch the failure logs:
+   gh run list --repo ${owner_repo} --json databaseId,status,conclusion,headSha 
+   gh run view <run_id> --repo ${owner_repo} --log-failed 2>/dev/null | tail -100
+
+3. Classify the failure as ONE of:
+   - transient: The failure is in infrastructure/toolchain setup (e.g. mise setup,
+     checkout, cache restore, runner initialization, network error downloading deps).
+     The actual test/dialyzer/lint steps never ran or were skipped due to the infra error.
+   - code_error: The failure is in a substantive check (tests, dialyzer, credo, lint,
+     compile) and is plausibly caused by the code changes in this PR.
+
+4. Write your verdict to ${handoff} as the FIRST line, followed by a blank line and a
+   brief explanation (2-5 sentences describing what failed and why you classified it):
+
+   transient
+   <explanation>
+
+   OR
+
+   code_error
+   <explanation including job name, step name, and key error message>
+
+Do not write anything else before the verdict line. Do not ask questions.
+Do NOT spawn another pi instance.
+EOF
+}
+
+investigate_ci_failure() {
+  local pr="$1" log_dir="$2" owner_repo="$3"
+  local inv_id="ci-inv-${pr}-$(date +%s)"
+  local inv_handoff="${log_dir}/${inv_id}-verdict.txt"
+  local inv_prompt="${log_dir}/${inv_id}-prompt.md"
+
+  generate_ci_investigation_prompt "$pr" "$owner_repo" "$inv_handoff" > "$inv_prompt"
+
+  log "  Investigating CI failure (agent $inv_id)..."
+  nohup pi --approve \
+    --session-id "$inv_id" \
+    -p "@$inv_prompt" \
+    > "${log_dir}/${inv_id}.log" 2>&1 &
+  local inv_pid=$!
+  CHILD_PIDS+=("$inv_pid")
+
+  # Wait up to 3 minutes for the investigation
+  if ! wait_for_handoff "$inv_handoff" 180 "$inv_pid"; then
+    log "  CI investigation timed out; treating as transient"
+    kill_agent "$inv_pid" 2>/dev/null || true
+    echo "transient"
+    return 0
+  fi
+
+  local verdict
+  verdict=$(head -1 "$inv_handoff" 2>/dev/null | tr -d '[:space:]')
+  local explanation
+  explanation=$(tail -n +3 "$inv_handoff" 2>/dev/null | head -5)
+
+  case "$verdict" in
+    transient)
+      log "  CI investigation: TRANSIENT — $explanation"
+      echo "transient"
+      ;;
+    code_error)
+      log "  CI investigation: CODE ERROR — $explanation"
+      echo "code_error:$explanation"
+      ;;
+    *)
+      log "  CI investigation: unrecognised verdict '$verdict'; treating as code_error"
+      echo "code_error:unrecognised investigation verdict"
+      ;;
+  esac
+}
+
 generate_review_prompt() {
   local pr="$1" worktree="$2" branch="$3" handoff="$4"
   cat <<EOF
@@ -2159,28 +2247,35 @@ for i in "${!ISSUES[@]}"; do
   log "[5/5] Merge PR #$CURRENT_PR"
   cd "$REPO" || continue
 
-  # Poll CI until complete; retry transient runner failures up to CI_RETRY_LIMIT times
+  # Poll CI until complete; on failure, investigate before deciding to retry or block
   CI_RETRY_COUNT=0
   while true; do
     CI_FAILURES=$(wait_for_ci "$CURRENT_PR" "$TIMEOUT_CI") || true
     if [ "$CI_FAILURES" = "0" ] || [ "$CI_FAILURES" = "timeout" ]; then
       break
     fi
-    # Failures detected — attempt a rerun if under the retry limit
-    if [ "$CI_RETRY_COUNT" -lt "$CI_RETRY_LIMIT" ]; then
-      CI_RETRY_COUNT=$((CI_RETRY_COUNT + 1))
-      PR_HEAD_SHA=$(gh pr view "$CURRENT_PR" --json headRefOid -q .headRefOid 2>/dev/null || echo "")
-      FAILED_RUN_ID=$(gh run list --repo "$OWNER_REPO" --commit "$PR_HEAD_SHA" --status failure --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
-      if [ -n "$FAILED_RUN_ID" ] && [ "$FAILED_RUN_ID" != "null" ]; then
-        log "  CI has $CI_FAILURES failure(s); retrying failed jobs (attempt $CI_RETRY_COUNT/$CI_RETRY_LIMIT, run $FAILED_RUN_ID)"
-        gh run rerun "$FAILED_RUN_ID" --repo "$OWNER_REPO" --failed 2>/dev/null || true
-        sleep 10
+    # Failures detected — investigate before deciding what to do
+    CI_INV=$(investigate_ci_failure "$CURRENT_PR" "$LOG_DIR" "$OWNER_REPO")
+    if [[ "$CI_INV" == transient* ]]; then
+      if [ "$CI_RETRY_COUNT" -lt "$CI_RETRY_LIMIT" ]; then
+        CI_RETRY_COUNT=$((CI_RETRY_COUNT + 1))
+        PR_HEAD_SHA=$(gh pr view "$CURRENT_PR" --json headRefOid -q .headRefOid 2>/dev/null || echo "")
+        FAILED_RUN_ID=$(gh run list --repo "$OWNER_REPO" --commit "$PR_HEAD_SHA" --status failure --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
+        if [ -n "$FAILED_RUN_ID" ] && [ "$FAILED_RUN_ID" != "null" ]; then
+          log "  Transient CI failure; retrying failed jobs (attempt $CI_RETRY_COUNT/$CI_RETRY_LIMIT, run $FAILED_RUN_ID)"
+          gh run rerun "$FAILED_RUN_ID" --repo "$OWNER_REPO" --failed 2>/dev/null || true
+          sleep 10
+        else
+          log "  Transient CI failure but no rerunnable run found — not retrying"
+          break
+        fi
       else
-        log "  CI has $CI_FAILURES failure(s); no rerunnable run found — not retrying"
+        log "  Transient CI failure; retry limit ($CI_RETRY_LIMIT) exhausted"
         break
       fi
     else
-      log "  CI has $CI_FAILURES failure(s); retry limit ($CI_RETRY_LIMIT) exhausted"
+      # Real code error — do not retry, surface for human resolution
+      log "  CI failure classified as code error: ${CI_INV#code_error:}"
       break
     fi
   done
