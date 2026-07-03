@@ -11,12 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-
 jobs:
   tag:
     name: Tag merged release PR
+    permissions:
+      contents: write # push the annotated release tag
     if: >-
       github.event.pull_request.merged == true &&
       startsWith(github.event.pull_request.title, 'chore: release v')
@@ -55,7 +54,7 @@ jobs:
 
       - name: Create and push tag
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail

@@ -38,8 +38,11 @@ export function updatePackageJson(packageJsonText, nextVersion) {
   if (typeof pkg.version !== "string") {
     throw new Error("package.json version must be a string");
   }
-  pkg.version = nextVersion;
-  return `${JSON.stringify(pkg, null, 2)}\n`;
+  const versionFieldRe = /^(\s*"version"\s*:\s*")[^"]*(")/m;
+  if (!versionFieldRe.test(packageJsonText)) {
+    throw new Error('package.json is missing a top-level "version" field to update');
+  }
+  return packageJsonText.replace(versionFieldRe, `$1${nextVersion}$2`);
 }
 
 export function updateReadmeInstallVersion(readmeText, nextVersion) {
@@ -94,9 +97,13 @@ export function prepareRelease({ root, version, bump, date }) {
 
   const releaseDate = date || new Date().toISOString().slice(0, 10);
 
-  writeFileSync(packagePath, updatePackageJson(packageJsonText, nextVersion));
-  writeFileSync(readmePath, updateReadmeInstallVersion(readFileSync(readmePath, "utf8"), nextVersion));
-  writeFileSync(changelogPath, insertChangelogEntry(readFileSync(changelogPath, "utf8"), nextVersion, releaseDate));
+  const updatedPackageJson = updatePackageJson(packageJsonText, nextVersion);
+  const updatedReadme = updateReadmeInstallVersion(readFileSync(readmePath, "utf8"), nextVersion);
+  const updatedChangelog = insertChangelogEntry(readFileSync(changelogPath, "utf8"), nextVersion, releaseDate);
+
+  writeFileSync(packagePath, updatedPackageJson);
+  writeFileSync(readmePath, updatedReadme);
+  writeFileSync(changelogPath, updatedChangelog);
 
   return { currentVersion, nextVersion, releaseDate };
 }

@@ -80,8 +80,14 @@ assertThrows("invalid version rejected", () => bumpVersion("1.2", "patch"), "X.Y
 assertThrows("invalid bump rejected", () => bumpVersion("1.2.3", "banana"), "major, minor, patch");
 
 console.log("\n=== release file update helpers ===");
-const updatedPackage = updatePackageJson('{"version":"1.2.3","name":"fixture"}\n', "1.2.4");
+const packageWithCustomFormatting = '{\n    "version"   :   "1.2.3",\n  "name":"fixture"\n}\n';
+const updatedPackage = updatePackageJson(packageWithCustomFormatting, "1.2.4");
 assertEqual("package version updated", "1.2.4", JSON.parse(updatedPackage).version);
+assertEqual(
+  "package update preserves surrounding formatting",
+  '{\n    "version"   :   "1.2.4",\n  "name":"fixture"\n}\n',
+  updatedPackage
+);
 
 const updatedReadme = updateReadmeInstallVersion(
   "pi install git:git@github.com:aweiker/skills.git@v1.2.3\n",
@@ -98,17 +104,35 @@ const updatedChangelog = insertChangelogEntry(changelog, "1.2.4", "2026-07-03");
 assertIncludes("changelog entry inserted before previous release", updatedChangelog, "## [1.2.4] - 2026-07-03\n\n### Changed");
 assertThrows("duplicate changelog release rejected", () => insertChangelogEntry(updatedChangelog, "1.2.4", "2026-07-03"), "already contains");
 
+function assertPrepareReleaseUpdatesFixture(label, options, expectedVersion) {
+  const root = makeFixtureRoot();
+  try {
+    const result = prepareRelease({ root, ...options, date: "2026-07-03" });
+    assertEqual(`${label}: reports previous version`, "1.2.3", result.currentVersion);
+    assertEqual(`${label}: reports next version`, expectedVersion, result.nextVersion);
+    assertEqual(`${label}: package.json updated on disk`, expectedVersion, JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version);
+    assertIncludes(`${label}: README updated on disk`, readFileSync(path.join(root, "README.md"), "utf8"), `@v${expectedVersion}`);
+    assertIncludes(`${label}: CHANGELOG updated on disk`, readFileSync(path.join(root, "CHANGELOG.md"), "utf8"), `## [${expectedVersion}] - 2026-07-03`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 console.log("\n=== prepareRelease integration ===");
-const root = makeFixtureRoot();
+assertPrepareReleaseUpdatesFixture("patch bump", { bump: "patch" }, "1.2.4");
+assertPrepareReleaseUpdatesFixture("minor bump", { bump: "minor" }, "1.3.0");
+assertPrepareReleaseUpdatesFixture("major bump", { bump: "major" }, "2.0.0");
+assertPrepareReleaseUpdatesFixture("explicit version", { version: "2.5.7" }, "2.5.7");
+
+console.log("\n=== prepareRelease failure atomicity ===");
+const rootWithBadReadme = makeFixtureRoot();
 try {
-  const result = prepareRelease({ root, bump: "patch", date: "2026-07-03" });
-  assertEqual("prepareRelease reports previous version", "1.2.3", result.currentVersion);
-  assertEqual("prepareRelease reports next version", "1.2.4", result.nextVersion);
-  assertEqual("package.json updated on disk", "1.2.4", JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version);
-  assertIncludes("README updated on disk", readFileSync(path.join(root, "README.md"), "utf8"), "@v1.2.4");
-  assertIncludes("CHANGELOG updated on disk", readFileSync(path.join(root, "CHANGELOG.md"), "utf8"), "## [1.2.4] - 2026-07-03");
+  const packageBefore = readFileSync(path.join(rootWithBadReadme, "package.json"), "utf8");
+  writeFileSync(path.join(rootWithBadReadme, "README.md"), "# Fixture without install line\n");
+  assertThrows("prepareRelease rejects invalid README", () => prepareRelease({ root: rootWithBadReadme, bump: "patch", date: "2026-07-03" }), "no canonical");
+  assertEqual("prepareRelease failure leaves package.json unchanged", packageBefore, readFileSync(path.join(rootWithBadReadme, "package.json"), "utf8"));
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(rootWithBadReadme, { recursive: true, force: true });
 }
 
 if (FAIL > 0) {
