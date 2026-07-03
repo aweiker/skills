@@ -736,7 +736,7 @@ final_status_settle() {
 # in this session it is definitively CLOSED — no API call needed. This prevents
 # a stale remote read from overriding stronger local ground truth.
 #
-# Retry schedule (defaults): 1s → 2s → 4s → 8s → 16s (5 attempts, ~31s total)
+# Retry schedule (defaults): 1s → 2s → 4s → 8s → 16s (4 sleeps across 5 attempts, ~15s worst-case)
 # Returns the first CLOSED state seen, or the last state after all attempts.
 gh_issue_state_with_retry() {
   local repo="$1" issue="$2"
@@ -1058,7 +1058,7 @@ Dependency risk (0-2): prerequisites in $BASE_BRANCH, test isolation.
 
 IMPORTANT — dependency state checks: GitHub's API is eventually consistent.
 If a dependency issue appears OPEN, do NOT immediately write blocker. Instead:
-1. Wait 5 seconds and re-check: `gh issue view <dep> --json state --jq .state`
+1. Wait 5 seconds and re-check: \`gh issue view <dep> --json state --jq .state\`
 2. If still OPEN, wait 15 more seconds and check a third time.
 3. Only write "blocker:" if the dependency is still OPEN after all three checks.
 A dependency merged seconds ago may still show OPEN on the first read.
