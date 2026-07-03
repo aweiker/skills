@@ -2,6 +2,14 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.7] - 2026-07-03
+
+### Changed
+
+- **Local CodeRabbit precheck accepts triaged findings** — the precheck verifier now accepts handoffs that document finding dispositions (fixed, deferred, out-of-scope, false-positive) rather than requiring a zero-findings result. Requires `coderabbit feedback` command/result to be documented for any finding not fixed in code.
+
+---
+
 ## [0.2.6] - 2026-07-03
 
 ### Fixed
