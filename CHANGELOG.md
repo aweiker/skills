@@ -2,6 +2,26 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.5] - 2026-07-03
+
+### Added
+
+- **Dependency state retry with exponential backoff** — `gh_issue_state_with_retry` queries issue
+  state with exponential backoff (4 sleeps across 5 attempts, ~15s worst-case) before returning a
+  non-CLOSED result. Prevents a stale GitHub API read immediately after a merge from misclassifying
+  a just-closed dependency as still-open and blocking downstream issues.
+- **Session-local completion memory** — before any API call, the retry helper checks
+  `ISSUES_COMPLETED` (the in-process record of issues merged in this run). If the pipeline already
+  merged the dependency in this session it returns CLOSED immediately without touching the network.
+  Used by `process_tracker_checkpoint` for all child and tracker issue checks.
+- **Gate prompt eventual-consistency guidance** — the scope gate agent prompt now receives the list
+  of session-completed issues and explicit instructions to re-check an OPEN dependency (wait 5s,
+  then 15s more) before writing a `blocker:` verdict.
+- **Transient CI failure retry** — the pipeline now retries transient CI failures before blocking,
+  and investigates CI failures before retrying to distinguish real failures from infrastructure noise.
+
+---
+
 ## [0.2.4] - 2026-07-02
 
 ### Added
