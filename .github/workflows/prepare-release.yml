@@ -1,0 +1,84 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump to apply when explicit version is empty
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: Explicit X.Y.Z version. Overrides bump when provided.
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    name: Prepare release PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq shellcheck
+
+      - name: Configure git author
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare release files
+        id: release
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          args=(--bump "$INPUT_BUMP")
+          if [ -n "$INPUT_VERSION" ]; then
+            args=(--version "$INPUT_VERSION")
+          fi
+          result="$(node scripts/prepare-release.mjs "${args[@]}")"
+          version="$(node -e 'const r=JSON.parse(process.argv[1]); process.stdout.write(r.nextVersion)' "$result")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run canonical validation
+        run: bash tests/run-all.sh
+
+      - name: Create release branch
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="release/v${VERSION}"
+          git checkout -b "$branch"
+          git add package.json README.md CHANGELOG.md
+          git commit -m "chore: release v${VERSION}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore: release v${VERSION}" \
+            --body "Automated release PR for v${VERSION}. Edit the changelog entry before merging if needed.\n\nValidation: \`bash tests/run-all.sh\`"

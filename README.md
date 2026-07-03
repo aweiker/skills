@@ -148,10 +148,14 @@ bash tests/pipeline/test-cursor-status.sh
 bash tests/pipeline/test-durable-pause.sh
 bash tests/pipeline/test-resume-validation.sh
 bash tests/pipeline/test-resume-supported.sh
+bash tests/pipeline/test-poll-intervals.sh
+bash tests/pipeline/test-tracker-checkpoint-contracts.sh
 bash tests/pipeline/test-resume-entrypoint.sh
 node tests/pipeline/test-pipeline-resume-extension.mjs
+node tests/pipeline/test-pipeline-launch-extension.mjs
 node tests/package/test-package-metadata.mjs
-shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh tests/pipeline/test-resume-validation.sh tests/pipeline/test-resume-supported.sh tests/pipeline/test-resume-entrypoint.sh
+node tests/package/test-release-automation.mjs
+shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh tests/pipeline/test-resume-validation.sh tests/pipeline/test-resume-supported.sh tests/pipeline/test-poll-intervals.sh tests/pipeline/test-tracker-checkpoint-contracts.sh tests/pipeline/test-resume-entrypoint.sh
 ```
 
 Check package visibility:
@@ -173,6 +177,32 @@ rather than a floating branch:
 
 ```bash
 pi install git:git@github.com:aweiker/skills.git@<tag-or-sha>
+```
+
+### Automated release flow
+
+Use the **Prepare Release** GitHub Actions workflow to create release PRs. It accepts either a
+`patch`/`minor`/`major` bump or an explicit `X.Y.Z` version, then updates:
+
+- `package.json` version;
+- README install tag;
+- `CHANGELOG.md` with a new editable release section.
+
+The workflow runs `bash tests/run-all.sh` before opening `chore: release vX.Y.Z`. Review and edit
+the changelog entry in that PR before merging. If the repository defines a `RELEASE_BOT_TOKEN`
+secret, the workflow uses it for the release branch push/PR creation so normal PR checks can run on
+that bot-authored branch; otherwise it falls back to `github.token` after validating inside the
+workflow run.
+
+After a release PR merges to `main`, the **Tag Release** workflow verifies metadata and creates the
+matching annotated `vX.Y.Z` git tag automatically.
+
+For local preparation or debugging, run:
+
+```bash
+node scripts/prepare-release.mjs --bump patch
+# or
+node scripts/prepare-release.mjs --version 1.2.3
 ```
 
 Update installed packages:

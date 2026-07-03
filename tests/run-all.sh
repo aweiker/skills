@@ -46,6 +46,8 @@ run_step node tests/pipeline/test-pipeline-launch-extension.mjs
 
 run_step node tests/package/test-package-metadata.mjs
 
+run_step node tests/package/test-release-automation.mjs
+
 run_step shellcheck \
   skills/implementation-pipeline/pipeline.sh \
   tests/pipeline/test-cursor-status.sh \
