@@ -1038,7 +1038,7 @@ process_tracker_checkpoint() {
 generate_gate_prompt() {
   local issue="$1" gate_file="$2"
   local completed_list=""
-  if [ ${#ISSUES_COMPLETED[@]:-0} -gt 0 ]; then
+  if [ ${#ISSUES_COMPLETED[@]} -gt 0 ]; then
     completed_list="Issues completed in this pipeline session (treat as CLOSED regardless of API state): ${ISSUES_COMPLETED[*]}"
   fi
   cat <<EOF
