@@ -175,6 +175,7 @@ gh() {
     *) echo "unexpected gh call: $args" >&2; return 2 ;;
   esac
 }
+sleep() { :; }
 
 if process_tracker_checkpoint 87 "tracker:116,117"; then
   ok "tracker checkpoint accepts session-completed child as CLOSED"
@@ -184,7 +185,7 @@ fi
 assert_not_contains "tracker does not query GitHub for session-completed child" "$(cat "$gh_calls_file")" "117"
 assert_contains "tracker issue is marked complete" " ${ISSUES_COMPLETED[*]} " " 87 "
 assert_eq "successful tracker checkpoint writes running status" "running" "$(cat "$status_file")"
-unset -f gh write_status handle_issue_failure
+unset -f gh sleep write_status handle_issue_failure
 
 if [ "$FAIL" -gt 0 ]; then
   echo ""
