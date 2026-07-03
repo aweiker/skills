@@ -27,6 +27,16 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Validate release bot token
+        env:
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_BOT_TOKEN" ]; then
+            echo "RELEASE_BOT_TOKEN secret is required to push release tags and trigger downstream tag workflows." >&2
+            exit 1
+          fi
+
       - name: Install test dependencies
         run: |
           set -euo pipefail
@@ -54,7 +64,7 @@ jobs:
 
       - name: Create and push tag
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail

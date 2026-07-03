@@ -188,14 +188,17 @@ Use the **Prepare Release** GitHub Actions workflow to create release PRs. It ac
 - README install tag;
 - `CHANGELOG.md` with a new editable release section.
 
+The workflow requires a `RELEASE_BOT_TOKEN` repository secret with permission to push branches and
+open pull requests. GitHub's default `github.token` is not sufficient because repository policy can
+block Actions from creating PRs. The workflow fails before creating a release branch when this secret
+is missing.
+
 The workflow runs `bash tests/run-all.sh` before opening `chore: release vX.Y.Z`. Review and edit
-the changelog entry in that PR before merging. If the repository defines a `RELEASE_BOT_TOKEN`
-secret, the workflow uses it for the release branch push/PR creation so normal PR checks can run on
-that bot-authored branch; otherwise it falls back to `github.token` after validating inside the
-workflow run.
+the changelog entry in that PR before merging.
 
 After a release PR merges to `main`, the **Tag Release** workflow verifies metadata and creates the
-matching annotated `vX.Y.Z` git tag automatically.
+matching annotated `vX.Y.Z` git tag automatically using `RELEASE_BOT_TOKEN`, so downstream
+tag-triggered workflows are not suppressed by the default Actions token.
 
 For local preparation or debugging, run:
 
