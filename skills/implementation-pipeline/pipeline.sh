@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2153
+# SC2153: pipeline config globals are sourced dynamically from the user-provided
+# config file, so ShellCheck cannot see their assignments statically.
 # ═══════════════════════════════════════════════════════════════════════════════
 # Implementation Pipeline — static, testable, lintable
 #
@@ -748,21 +751,21 @@ gh_issue_state_with_retry() {
   # definitively CLOSED. Trust local knowledge over a potentially stale API.
   for completed in "${ISSUES_COMPLETED[@]:-}"; do
     if [ "$completed" = "$issue" ]; then
-      log "    #$issue: completed in this session — treating as CLOSED without API call"
+      log "    #$issue: completed in this session — treating as CLOSED without API call" >&2
       echo "CLOSED"
       return 0
     fi
   done
 
-  while [ $attempt -le $max_attempts ]; do
+  while [ $attempt -le "$max_attempts" ]; do
     state=$(cd "$repo" && gh issue view "$issue" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
     if [ "$state" = "CLOSED" ]; then
       echo "$state"
       return 0
     fi
-    if [ $attempt -lt $max_attempts ]; then
-      log "    #$issue state=$state (attempt $attempt/$max_attempts); retrying in ${delay}s (GH API eventual consistency)"
-      sleep $delay
+    if [ $attempt -lt "$max_attempts" ]; then
+      log "    #$issue state=$state (attempt $attempt/$max_attempts); retrying in ${delay}s (GH API eventual consistency)" >&2
+      sleep "$delay"
       delay=$((delay * 2))
     fi
     attempt=$((attempt + 1))
@@ -873,33 +876,6 @@ verify_local_coderabbit_precheck() {
     log "  Local CodeRabbit precheck: rate-limited/unavailable, PR-side bot review is safety net ✓"
     return 0
   fi
-
-  local clean_result triaged_result unaddressed_result nonfixed_result feedback_result
-  clean_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(zero findings|findings:[[:space:]]*0|findings[[:space:]]*\|?[[:space:]]*0|all (findings )?addressed|addressed in-place|addressed or deferred with rationale|clean|review completed.*0|zero actionable findings|no (real )?actionable findings remain|actionable findings remain:[[:space:]]*0)" && echo 1 || echo 0)
-  triaged_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(finding disposition|finding dispositions|findings triaged|triage)" \
-    && printf '%s\n' "$normalized_handoff" | grep -Eiq "(fixed|addressed|deferred|out[-[:space:]]of[-[:space:]]scope|false[-[:space:]]positive|push ?back|not actionable|no code change made|documented.*#|owned by #[0-9]+)" \
-    && echo 1 || echo 0)
-  unaddressed_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(unaddressed|untriaged|needs fix|fix now|blocking finding|actionable findings? remain|remaining actionable|must fix before|not addressed)" && echo 1 || echo 0)
-  nonfixed_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(deferred|out[-[:space:]]of[-[:space:]]scope|false[-[:space:]]positive|push ?back|disagree|stale finding|incorrect finding|wrong finding|harmful suggestion|reviewer is wrong|no code change made)" && echo 1 || echo 0)
-  feedback_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "coderabbit[[:space:]]+feedback" && echo 1 || echo 0)
-
-  if [ "$clean_result" != "1" ] && { [ "$triaged_result" != "1" ] || [ "$unaddressed_result" = "1" ]; }; then
-    log "  ERROR: Local CodeRabbit precheck lacks a clear zero-actionable-findings result or finding disposition."
-    return 1
-  fi
-
-  if [ "$nonfixed_result" = "1" ] && [ "$feedback_result" != "1" ]; then
-    log "  ERROR: Local CodeRabbit finding was not fixed in code without a documented coderabbit feedback command/result."
-    return 1
-  fi
-
-  if [ "$triaged_result" = "1" ] && [ "$clean_result" != "1" ]; then
-    log "  Local CodeRabbit precheck documented with triaged non-actionable/deferred findings ✓"
-  else
-    log "  Local CodeRabbit precheck documented ✓"
-  fi
-  return 0
-}
 
   local clean_result triaged_result unaddressed_result nonfixed_result feedback_result
   clean_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(zero findings|findings:[[:space:]]*0|findings[[:space:]]*\|?[[:space:]]*0|all (findings )?addressed|addressed in-place|addressed or deferred with rationale|clean|review completed.*0|zero actionable findings|no (real )?actionable findings remain|actionable findings remain:[[:space:]]*0)" && echo 1 || echo 0)
@@ -1220,9 +1196,10 @@ EOF
 
 investigate_ci_failure() {
   local pr="$1" log_dir="$2" owner_repo="$3"
-  local inv_id="ci-inv-${pr}-$(date +%s)"
-  local inv_handoff="${log_dir}/${inv_id}-verdict.txt"
-  local inv_prompt="${log_dir}/${inv_id}-prompt.md"
+  local inv_id inv_handoff inv_prompt
+  inv_id="ci-inv-${pr}-$(date +%s)"
+  inv_handoff="${log_dir}/${inv_id}-verdict.txt"
+  inv_prompt="${log_dir}/${inv_id}-prompt.md"
 
   generate_ci_investigation_prompt "$pr" "$owner_repo" "$inv_handoff" > "$inv_prompt"
 
