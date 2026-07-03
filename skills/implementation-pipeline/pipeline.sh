@@ -724,6 +724,38 @@ final_status_settle() {
   fi
 }
 
+# gh_issue_state_with_retry REPO ISSUE [MAX_ATTEMPTS] [BASE_DELAY_SECONDS]
+#
+# Query an issue's state with exponential backoff. GitHub's API is eventually
+# consistent — a merge or close that happened seconds ago may still return the
+# old state on the first read. A single-shot check can therefore misclassify a
+# just-merged dependency as "still open" and incorrectly block downstream work.
+#
+# Retry schedule (defaults): 1s → 2s → 4s → 8s → 16s (5 attempts, ~31s total)
+# Returns the first CLOSED state seen, or the last state after all attempts.
+gh_issue_state_with_retry() {
+  local repo="$1" issue="$2"
+  local max_attempts="${3:-5}"
+  local base_delay="${4:-1}"
+  local attempt=1 delay=$base_delay state
+
+  while [ $attempt -le $max_attempts ]; do
+    state=$(cd "$repo" && gh issue view "$issue" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+    if [ "$state" = "CLOSED" ]; then
+      echo "$state"
+      return 0
+    fi
+    if [ $attempt -lt $max_attempts ]; then
+      log "    #$issue state=$state (attempt $attempt/$max_attempts); retrying in ${delay}s (GH API eventual consistency)"
+      sleep $delay
+      delay=$((delay * 2))
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  echo "$state"
+}
+
 wait_for_handoff() {
   local handoff_file="$1"
   local timeout="$2"
@@ -934,7 +966,7 @@ process_tracker_checkpoint() {
       continue
     fi
 
-    state=$(cd "$REPO" && gh issue view "$child" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+    state=$(gh_issue_state_with_retry "$REPO" "$child")
     if [ "$state" != "CLOSED" ]; then
       open_children+=("#$child:$state")
     fi
@@ -945,7 +977,7 @@ process_tracker_checkpoint() {
     return 1
   fi
 
-  state=$(cd "$REPO" && gh issue view "$issue" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+  state=$(gh_issue_state_with_retry "$REPO" "$issue")
   title=$(cd "$REPO" && gh issue view "$issue" --json title --jq .title 2>/dev/null || echo "")
 
   if [ "$state" = "CLOSED" ]; then
@@ -1002,6 +1034,13 @@ Boundary clarity (0-4): subsystems touched, existing-vs-new code, contract bound
 Scope firmness (0-4): acceptance criteria count/quality, stopping point clarity, adjacent temptation.
 Review difficulty (0-4): diff size estimate, behavioral change count, domain knowledge needed.
 Dependency risk (0-2): prerequisites in $BASE_BRANCH, test isolation.
+
+IMPORTANT — dependency state checks: GitHub's API is eventually consistent.
+If a dependency issue appears OPEN, do NOT immediately write blocker. Instead:
+1. Wait 5 seconds and re-check: `gh issue view <dep> --json state --jq .state`
+2. If still OPEN, wait 15 more seconds and check a third time.
+3. Only write "blocker:" if the dependency is still OPEN after all three checks.
+A dependency merged seconds ago may still show OPEN on the first read.
 
 Thresholds: 0-4=proceed, 5-7=proceed-with-warning, 8+=skip, dependency=2=blocker.
 
