@@ -2,6 +2,14 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.6] - 2026-07-03
+
+### Fixed
+
+- **Bad substitution crash in scope gate** — `${#ISSUES_COMPLETED[@]:-0}` is not valid bash; the `:-` default operator does not apply to array length expressions. Caused an immediate pipeline crash on the first scope gate invocation. Fixed to `${#ISSUES_COMPLETED[@]}`.
+
+---
+
 ## [0.2.5] - 2026-07-03
 
 ### Added
