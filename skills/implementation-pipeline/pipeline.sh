@@ -731,6 +731,11 @@ final_status_settle() {
 # old state on the first read. A single-shot check can therefore misclassify a
 # just-merged dependency as "still open" and incorrectly block downstream work.
 #
+# Before hitting the API at all, checks ISSUES_COMPLETED (the in-process
+# record of issues merged in this pipeline session). If the issue was completed
+# in this session it is definitively CLOSED — no API call needed. This prevents
+# a stale remote read from overriding stronger local ground truth.
+#
 # Retry schedule (defaults): 1s → 2s → 4s → 8s → 16s (5 attempts, ~31s total)
 # Returns the first CLOSED state seen, or the last state after all attempts.
 gh_issue_state_with_retry() {
@@ -738,6 +743,16 @@ gh_issue_state_with_retry() {
   local max_attempts="${3:-5}"
   local base_delay="${4:-1}"
   local attempt=1 delay=$base_delay state
+
+  # Fast path: if this pipeline session already completed the issue, it is
+  # definitively CLOSED. Trust local knowledge over a potentially stale API.
+  for completed in "${ISSUES_COMPLETED[@]:-}"; do
+    if [ "$completed" = "$issue" ]; then
+      log "    #$issue: completed in this session — treating as CLOSED without API call"
+      echo "CLOSED"
+      return 0
+    fi
+  done
 
   while [ $attempt -le $max_attempts ]; do
     state=$(cd "$repo" && gh issue view "$issue" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
@@ -1022,11 +1037,17 @@ process_tracker_checkpoint() {
 
 generate_gate_prompt() {
   local issue="$1" gate_file="$2"
+  local completed_list=""
+  if [ ${#ISSUES_COMPLETED[@]:-0} -gt 0 ]; then
+    completed_list="Issues completed in this pipeline session (treat as CLOSED regardless of API state): ${ISSUES_COMPLETED[*]}"
+  fi
   cat <<EOF
 You are evaluating whether GitHub issue #$issue is appropriately scoped for a single
 implementation + review pipeline pass.
 
-Read the issue: \`gh issue view $issue --json body,title\`
+${completed_list:+$completed_list
+
+}Read the issue: \`gh issue view $issue --json body,title\`
 
 Score using the Reviewability Risk Score (0-14):
 
