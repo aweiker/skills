@@ -2,6 +2,37 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.9] - 2026-07-04
+
+
+
+### Added
+
+- Automate skills release preparation (#10)
+- Generate release notes with git-cliff (#13)
+
+
+### Fixed
+
+- Address pipeline CI review findings (#9)
+- Address release automation review findings (#10)
+- Require release bot token for release workflows (#11)
+- Make git-cliff release notes deterministic (#13)
+- Preserve release note metadata (#13)
+
+
+### Maintenance
+
+- Simplify release script entrypoint guard (#10)
+
+
+### Testing
+
+- Add pipeline tracker checkpoint contract CI (#9)
+
+
+---
+
 ## [0.2.8] - 2026-07-03
 
 ### Fixed
