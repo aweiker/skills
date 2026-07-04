@@ -1,0 +1,44 @@
+# git-cliff configuration for aweiker/skills release notes.
+#
+# Keep commit subjects conventional; see CONTRIBUTING.md.
+
+[changelog]
+header = ""
+body = """
+{% if version %}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}
+## [unreleased] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }}{% if commit.remote.pr_number %} (#{{ commit.remote.pr_number }}){% endif %}{% if commit.breaking_description %} **Breaking:** {{ commit.breaking_description }}{% endif %}
+{%- endfor %}
+{% endfor %}
+
+---
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"
+
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Changed" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^ci", group = "Maintenance" },
+  { message = "^build", group = "Maintenance" },
+  { message = "^chore", group = "Maintenance" },
+  { message = "^revert", group = "Reverted" },
+]

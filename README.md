@@ -15,6 +15,9 @@ in `package.json`.
 | `skills/ai-pr-review-loop/references/` | Provider-specific review-loop contracts and worker-mode docs. |
 | `extensions/` | TypeScript pi extensions loaded by the package. |
 | `package.json` | Pi package manifest. |
+| `cliff.toml` | `git-cliff` release-note grouping configuration. |
+| `CONTRIBUTING.md` | Commit message and PR rules for contributors. |
+| `scripts/install-git-cliff.sh` | Shared CI installer for the pinned `git-cliff` version. |
 
 ## Installation
 
@@ -133,6 +136,9 @@ Execution plans for larger changes live under `docs/plans/`.
 
 ## Development workflow
 
+Read `CONTRIBUTING.md` before opening a PR. Commit messages should follow Conventional Commits
+because release notes are generated from commit metadata with `git-cliff`.
+
 Run all checks with the canonical validation script:
 
 ```bash
@@ -155,7 +161,8 @@ node tests/pipeline/test-pipeline-resume-extension.mjs
 node tests/pipeline/test-pipeline-launch-extension.mjs
 node tests/package/test-package-metadata.mjs
 node tests/package/test-release-automation.mjs
-shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh tests/pipeline/test-resume-validation.sh tests/pipeline/test-resume-supported.sh tests/pipeline/test-poll-intervals.sh tests/pipeline/test-tracker-checkpoint-contracts.sh tests/pipeline/test-resume-entrypoint.sh
+bash tests/package/test-git-cliff-config.sh
+shellcheck skills/implementation-pipeline/pipeline.sh tests/pipeline/test-cursor-status.sh tests/pipeline/test-durable-pause.sh tests/pipeline/test-resume-validation.sh tests/pipeline/test-resume-supported.sh tests/pipeline/test-poll-intervals.sh tests/pipeline/test-tracker-checkpoint-contracts.sh tests/pipeline/test-resume-entrypoint.sh tests/package/test-git-cliff-config.sh scripts/install-git-cliff.sh
 ```
 
 Check package visibility:
@@ -186,26 +193,33 @@ Use the **Prepare Release** GitHub Actions workflow to create release PRs. It ac
 
 - `package.json` version;
 - README install tag;
-- `CHANGELOG.md` with a new editable release section.
+- `CHANGELOG.md` with a `git-cliff` generated release section based on Conventional Commits.
 
 The workflow requires a `RELEASE_BOT_TOKEN` repository secret with permission to push branches and
 open pull requests. GitHub's default `github.token` is not sufficient because repository policy can
 block Actions from creating PRs. The workflow fails before creating a release branch when this secret
 is missing.
 
-The workflow runs `bash tests/run-all.sh` before opening `chore: release vX.Y.Z`. Review and edit
-the changelog entry in that PR before merging.
+The workflow installs `git-cliff`, runs `bash tests/run-all.sh`, then opens `chore: release vX.Y.Z`.
+Review and edit the generated changelog entry in that PR before merging.
 
 After a release PR merges to `main`, the **Tag Release** workflow verifies metadata and creates the
 matching annotated `vX.Y.Z` git tag automatically using `RELEASE_BOT_TOKEN`, so downstream
 tag-triggered workflows are not suppressed by the default Actions token.
 
-For local preparation or debugging, run:
+For local preparation or debugging, install `git-cliff` and run:
 
 ```bash
+bash scripts/install-git-cliff.sh
 node scripts/prepare-release.mjs --bump patch
 # or
 node scripts/prepare-release.mjs --version 1.2.3
+```
+
+To bypass `git-cliff` while debugging the metadata update path only:
+
+```bash
+node scripts/prepare-release.mjs --bump patch --changelog-mode placeholder
 ```
 
 Update installed packages:

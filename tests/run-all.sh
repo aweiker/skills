@@ -48,6 +48,8 @@ run_step node tests/package/test-package-metadata.mjs
 
 run_step node tests/package/test-release-automation.mjs
 
+run_step bash tests/package/test-git-cliff-config.sh
+
 run_step shellcheck \
   skills/implementation-pipeline/pipeline.sh \
   tests/pipeline/test-cursor-status.sh \
@@ -56,7 +58,9 @@ run_step shellcheck \
   tests/pipeline/test-resume-supported.sh \
   tests/pipeline/test-poll-intervals.sh \
   tests/pipeline/test-tracker-checkpoint-contracts.sh \
-  tests/pipeline/test-resume-entrypoint.sh
+  tests/pipeline/test-resume-entrypoint.sh \
+  tests/package/test-git-cliff-config.sh \
+  scripts/install-git-cliff.sh
 
 echo ""
 echo "All checks passed."

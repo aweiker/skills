@@ -26,7 +26,10 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq shellcheck
+          sudo apt-get install -y curl jq shellcheck
+
+      - name: Install git-cliff
+        run: bash scripts/install-git-cliff.sh
 
       - name: Run canonical validation
         run: bash tests/run-all.sh
