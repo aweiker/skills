@@ -2,6 +2,12 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.10] - 2026-07-04
+
+### Removed
+
+- Local CodeRabbit CLI precheck from implementation pipeline — the precheck was consuming quota on every batch run; the PR-side CodeRabbit bot review remains the primary review gate
+
 ## [0.2.9] - 2026-07-04
 
 
