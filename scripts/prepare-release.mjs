@@ -120,7 +120,7 @@ export function buildGitCliffChangelogEntry({
     throw new Error(`git-cliff failed while generating changelog for v${nextVersion}${stderr ? `: ${stderr}` : ""}`);
   }
 
-  const entry = output.trim();
+  const entry = output.trim().replace(/^## \[unreleased\]/m, `## [${nextVersion}]`);
   if (!entry) {
     throw new Error(`git-cliff produced an empty changelog entry for v${nextVersion}`);
   }

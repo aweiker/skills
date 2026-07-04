@@ -11,8 +11,8 @@ trap 'rm -f "$tmp"' EXIT
 
 git-cliff --config cliff.toml --tag v0.0.0 --with-commit "fix: smoke test git-cliff config" > "$tmp"
 
-if ! grep -q '^## \[0\.0\.0\]' "$tmp"; then
-  echo "ERROR: git-cliff output did not include expected v0.0.0 release header" >&2
+if ! grep -Eq '^## \[(0\.0\.0|unreleased)\]' "$tmp"; then
+  echo "ERROR: git-cliff output did not include expected release header" >&2
   cat "$tmp" >&2
   exit 1
 fi
