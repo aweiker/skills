@@ -57,7 +57,6 @@ Optional (have defaults):
   PAUSE_POLL_SECONDS   — paused control-file polling interval (default: 2)
   DEAD_AGENT_FLUSH_SECONDS — dead-agent handoff flush grace period (default: 2)
   FINAL_STATUS_SETTLE_SECONDS — final status settle delay after each issue (default: 0)
-  LOCAL_CODERABBIT_PRECHECK — 1 to run local CodeRabbit CLI before PR for coderabbit provider (default: 1)
   SKIP_REVIEW          — 1 to skip self-review phase (default: 0)
   SKIP_BOT             — 1 to skip bot review phase (default: 0)
   SKIP_SCOPE_GATE      — 1 to skip scope gate (default: 0)
@@ -257,7 +256,6 @@ CI_RETRY_LIMIT="${CI_RETRY_LIMIT:-1}"
 PAUSE_POLL_SECONDS="${PAUSE_POLL_SECONDS:-2}"
 DEAD_AGENT_FLUSH_SECONDS="${DEAD_AGENT_FLUSH_SECONDS:-2}"
 FINAL_STATUS_SETTLE_SECONDS="${FINAL_STATUS_SETTLE_SECONDS:-0}"
-LOCAL_CODERABBIT_PRECHECK="${LOCAL_CODERABBIT_PRECHECK:-1}"
 SKIP_REVIEW="${SKIP_REVIEW:-0}"
 SKIP_BOT="${SKIP_BOT:-0}"
 SKIP_SCOPE_GATE="${SKIP_SCOPE_GATE:-0}"
@@ -847,62 +845,7 @@ extract_pr_number() {
   return 1
 }
 
-verify_local_coderabbit_precheck() {
-  local handoff="$1"
 
-  if [ "${AI_REVIEW_PROVIDER:-}" != "coderabbit" ] || [ "${LOCAL_CODERABBIT_PRECHECK:-1}" != "1" ]; then
-    return 0
-  fi
-
-  if [ ! -s "$handoff" ]; then
-    log "  ERROR: Missing implementation handoff; cannot verify local CodeRabbit precheck."
-    return 1
-  fi
-
-  if ! grep -Eiq "local[[:space:]-]+coderabbit|coderabbit review" "$handoff"; then
-    log "  ERROR: Implementation handoff does not document the required local CodeRabbit precheck."
-    return 1
-  fi
-
-  local normalized_handoff
-  normalized_handoff=$(sed -E \
-    -e 's/[0-9]+ passed,[[:space:]]*0 (failed|failures)/doctor clean/Ig' \
-    -e 's/0 (failed|failures)/zero problems/Ig' \
-    -e 's/0 findings/zero findings/Ig' \
-    "$handoff")
-
-  # Rate-limited or unavailable is acceptable: the PR-side bot review is the safety net.
-  if printf '%s\n' "$normalized_handoff" | grep -Eiq "coderabbit.*(rate.limit|rate_limit|unavailable|service is down|not available)|rate.limit.*(coderabbit|review)"; then
-    log "  Local CodeRabbit precheck: rate-limited/unavailable, PR-side bot review is safety net ✓"
-    return 0
-  fi
-
-  local clean_result triaged_result unaddressed_result nonfixed_result feedback_result
-  clean_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(zero findings|findings:[[:space:]]*0|findings[[:space:]]*\|?[[:space:]]*0|all (findings )?addressed|addressed in-place|addressed or deferred with rationale|clean|review completed.*0|zero actionable findings|no (real )?actionable findings remain|actionable findings remain:[[:space:]]*0)" && echo 1 || echo 0)
-  triaged_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(finding disposition|finding dispositions|findings triaged|triage)" \
-    && printf '%s\n' "$normalized_handoff" | grep -Eiq "(fixed|addressed|deferred|out[-[:space:]]of[-[:space:]]scope|false[-[:space:]]positive|push ?back|not actionable|no code change made|documented.*#|owned by #[0-9]+)" \
-    && echo 1 || echo 0)
-  unaddressed_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(unaddressed|untriaged|needs fix|fix now|blocking finding|actionable findings? remain|remaining actionable|must fix before|not addressed)" && echo 1 || echo 0)
-  nonfixed_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "(deferred|out[-[:space:]]of[-[:space:]]scope|false[-[:space:]]positive|push ?back|disagree|stale finding|incorrect finding|wrong finding|harmful suggestion|reviewer is wrong|no code change made)" && echo 1 || echo 0)
-  feedback_result=$(printf '%s\n' "$normalized_handoff" | grep -Eiq "coderabbit[[:space:]]+feedback" && echo 1 || echo 0)
-
-  if [ "$clean_result" != "1" ] && { [ "$triaged_result" != "1" ] || [ "$unaddressed_result" = "1" ]; }; then
-    log "  ERROR: Local CodeRabbit precheck lacks a clear zero-actionable-findings result or finding disposition."
-    return 1
-  fi
-
-  if [ "$nonfixed_result" = "1" ] && [ "$feedback_result" != "1" ]; then
-    log "  ERROR: Local CodeRabbit finding was not fixed in code without a documented coderabbit feedback command/result."
-    return 1
-  fi
-
-  if [ "$triaged_result" = "1" ] && [ "$clean_result" != "1" ]; then
-    log "  Local CodeRabbit precheck documented with triaged non-actionable/deferred findings ✓"
-  else
-    log "  Local CodeRabbit precheck documented ✓"
-  fi
-  return 0
-}
 
 wait_for_ci() {
   local pr="$1"
@@ -1120,26 +1063,10 @@ generate_impl_prompt() {
   echo "2. Apply the design-first-implementation skill (full workflow if edge cases exist)"
   echo "3. Implement following all repository AGENTS.md rules"
   echo "4. Run make check (or the repo equivalent validation) and ensure it passes"
-  if [ "${AI_REVIEW_PROVIDER:-}" = "coderabbit" ] && [ "${LOCAL_CODERABBIT_PRECHECK:-1}" = "1" ]; then
-    echo "5. Commit all changes with a descriptive message referencing #${issue}"
-    echo "6. Before pushing or opening a PR, run a single-pass local CodeRabbit CLI precheck against the committed diff:"
-    echo "   - Verify availability with: command -v coderabbit && coderabbit doctor"
-    echo "   - Run: coderabbit review --agent --type committed --base ${BASE_BRANCH}"
-    echo "   - Then inspect findings with: coderabbit review findings"
-    echo "   - Fix verified functional/security/correctness/stability findings in code before opening the PR."
-    echo "   - For valid but explicitly out-of-scope findings, run coderabbit feedback with the disposition you would put in a PR comment (including the owning follow-up issue), then record the rationale and feedback command/result in the PR body and handoff."
-    echo "   - When you disagree with a finding (false-positive, stale, incorrect, or harmful suggestion), run coderabbit feedback with a concise explanation and document the command/result in the PR body and handoff."
-    echo "   - Do NOT re-run the local CodeRabbit review after fixing or triaging findings. One pass only."
-    echo "   - If the CLI is unavailable, rate-limited, or authentication/service is down, document it in the handoff and proceed; the PR-side CodeRabbit bot review is the remaining safety net."
-    echo "7. Push the branch to origin"
-    echo "8. Open a non-draft PR targeting ${BASE_BRANCH} with title and body referencing #${issue}. The PR body must include a 'Local CodeRabbit Precheck' section with command/result/finding disposition."
-    echo "9. Write a handoff to ${handoff} with: PR number, head SHA, validation results, local CodeRabbit precheck command/result/finding disposition, files changed. If CodeRabbit reports findings that are not fixed in code because they are explicitly out of scope, false-positive, stale, or incorrect, include a Finding disposition section and state why zero actionable findings remain. Include the coderabbit feedback command/result for every non-fixed finding."
-  else
-    echo "5. Commit all changes with a descriptive message referencing #${issue}"
-    echo "6. Push the branch to origin"
-    echo "7. Open a non-draft PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
-    echo "8. Write a handoff to ${handoff} with: PR number, head SHA, validation results, files changed"
-  fi
+  echo "5. Commit all changes with a descriptive message referencing #${issue}"
+  echo "6. Push the branch to origin"
+  echo "7. Open a non-draft PR targeting ${BASE_BRANCH} with title and body referencing #${issue}"
+  echo "8. Write a handoff to ${handoff} with: PR number, head SHA, validation results, files changed"
   echo ""
   echo "Do NOT ask for clarification - implement based on the issue acceptance criteria."
   echo "Do NOT spawn another pi instance."
@@ -1269,8 +1196,6 @@ You are the worker pi instance. Do not spawn another pi instance.
 Provider: $AI_REVIEW_PROVIDER
 
 Task: run $REVIEW_LOOP_COUNT preflight-first AI PR review loop(s) for PR #$pr and address actionable items.
-
-Before triggering remote CodeRabbit for coderabbit provider, verify the PR body documents a Local CodeRabbit Precheck. If the precheck is missing, run \`coderabbit doctor\` and \`coderabbit review --agent --type committed --base $BASE_BRANCH\` locally as a fallback, fix real findings, update the PR body/comment with the result, and note in HANDOFF that the required pre-PR check was recovered post-PR. Do not treat this fallback as a substitute for future implementation agents running it before PR creation.
 
 Inputs:
 - WORKTREE: $worktree
@@ -1777,7 +1702,6 @@ resume_entrypoint() {
   PAUSE_POLL_SECONDS="${PAUSE_POLL_SECONDS:-2}"
   DEAD_AGENT_FLUSH_SECONDS="${DEAD_AGENT_FLUSH_SECONDS:-2}"
   FINAL_STATUS_SETTLE_SECONDS="${FINAL_STATUS_SETTLE_SECONDS:-0}"
-  LOCAL_CODERABBIT_PRECHECK="${LOCAL_CODERABBIT_PRECHECK:-1}"
   SKIP_REVIEW="${SKIP_REVIEW:-0}"
   SKIP_BOT="${SKIP_BOT:-0}"
   SKIP_SCOPE_GATE="${SKIP_SCOPE_GATE:-0}"
@@ -1953,7 +1877,7 @@ else
   log "Strategy:  $MERGE_STRATEGY"
   log "Timeouts:  impl=${TIMEOUT_IMPL}s rev=${TIMEOUT_REVIEW}s bot=${TIMEOUT_BOT}s ci=${TIMEOUT_CI}s"
   log "Polling:   handoff=${HANDOFF_POLL_SECONDS}s ci=${CI_POLL_SECONDS}s ci_retries=${CI_RETRY_LIMIT} pause=${PAUSE_POLL_SECONDS}s dead_flush=${DEAD_AGENT_FLUSH_SECONDS}s final_settle=${FINAL_STATUS_SETTLE_SECONDS}s"
-  log "Flags:     review=${SKIP_REVIEW:+SKIP}${SKIP_REVIEW:-on} bot=${SKIP_BOT:+SKIP}${SKIP_BOT:-on} gate=${SKIP_SCOPE_GATE:+SKIP}${SKIP_SCOPE_GATE:-on} merge=${NO_MERGE:+NO}${NO_MERGE:-on} continue_on_failure=$CONTINUE_ON_FAILURE local_coderabbit=$LOCAL_CODERABBIT_PRECHECK"
+  log "Flags:     review=${SKIP_REVIEW:+SKIP}${SKIP_REVIEW:-on} bot=${SKIP_BOT:+SKIP}${SKIP_BOT:-on} gate=${SKIP_SCOPE_GATE:+SKIP}${SKIP_SCOPE_GATE:-on} merge=${NO_MERGE:+NO}${NO_MERGE:-on} continue_on_failure=$CONTINUE_ON_FAILURE"
   log "Log dir:   $LOG_DIR"
   log "═══════════════════════════════════════════════════════════════"
 fi  # end normal-start vs resume branch
@@ -2211,11 +2135,6 @@ for i in "${!ISSUES[@]}"; do
     log "  ERROR: Timed out or died after ${TIMEOUT_IMPL}s."
     kill_agent "$IMPL_PID"
     handle_issue_failure "$ISSUE" "implementation timed out or died" || break
-    continue
-  fi
-  log "  Done. Verifying local pre-PR CodeRabbit precheck..."
-  if ! verify_local_coderabbit_precheck "$IMPL_HANDOFF"; then
-    handle_issue_failure "$ISSUE" "local CodeRabbit precheck missing or failed" || break
     continue
   fi
   log "  Extracting PR number..."
