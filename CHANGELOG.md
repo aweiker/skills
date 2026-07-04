@@ -2,6 +2,14 @@
 
 All notable changes to this package are recorded here.
 
+## [0.2.9] - 2026-07-04
+
+### Changed
+
+- _Describe release changes before merging._
+
+---
+
 ## [0.2.8] - 2026-07-03
 
 ### Fixed
