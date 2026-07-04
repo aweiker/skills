@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
@@ -58,7 +59,7 @@ export function updateReadmeInstallVersion(readmeText, nextVersion) {
   return updated;
 }
 
-export function buildChangelogEntry(nextVersion, date) {
+export function buildPlaceholderChangelogEntry(nextVersion, date) {
   parseVersion(nextVersion);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw new Error(`date must match YYYY-MM-DD, got ${JSON.stringify(date)}`);
@@ -66,10 +67,91 @@ export function buildChangelogEntry(nextVersion, date) {
   return `## [${nextVersion}] - ${date}\n\n### Changed\n\n- _Describe release changes before merging._\n\n---\n\n`;
 }
 
-export function insertChangelogEntry(changelogText, nextVersion, date) {
+// Backward-compatible name for tests/callers that still use the old helper.
+export const buildChangelogEntry = buildPlaceholderChangelogEntry;
+
+export function collectReleaseCommitSubjects({ root, gitCommand = "git" }) {
+  let lastTag = "";
+  try {
+    lastTag = execFileSync(gitCommand, ["describe", "--tags", "--abbrev=0"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    lastTag = "";
+  }
+
+  const rangeArgs = lastTag ? [`${lastTag}..HEAD`] : ["HEAD"];
+  const output = execFileSync(gitCommand, ["log", "--format=%s", ...rangeArgs], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return output.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+export function buildGitCliffChangelogEntry({
+  root,
+  nextVersion,
+  gitCliffCommand = "git-cliff",
+  gitCommand = "git",
+  commitSubjects,
+}) {
+  parseVersion(nextVersion);
+  const subjects = commitSubjects || collectReleaseCommitSubjects({ root, gitCommand });
+  const args = ["--config", "cliff.toml", "--tag", `v${nextVersion}`];
+  for (const subject of subjects) {
+    args.push("--with-commit", subject);
+  }
+  if (subjects.length === 0) {
+    args.push("--with-commit", `chore: release v${nextVersion}`);
+  }
+
+  let output;
+  try {
+    output = execFileSync(gitCliffCommand, args, {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (err) {
+    const stderr = err?.stderr ? String(err.stderr).trim() : "";
+    throw new Error(`git-cliff failed while generating changelog for v${nextVersion}${stderr ? `: ${stderr}` : ""}`);
+  }
+
+  const entry = output.trim();
+  if (!entry) {
+    throw new Error(`git-cliff produced an empty changelog entry for v${nextVersion}`);
+  }
+  return `${entry}\n\n`;
+}
+
+export function buildReleaseChangelogEntry({
+  root,
+  nextVersion,
+  date,
+  changelogMode = "git-cliff",
+  gitCliffCommand = "git-cliff",
+  gitCommand = "git",
+  commitSubjects,
+}) {
+  if (changelogMode === "placeholder") {
+    return buildPlaceholderChangelogEntry(nextVersion, date);
+  }
+  if (changelogMode === "git-cliff") {
+    return buildGitCliffChangelogEntry({ root, nextVersion, gitCliffCommand, gitCommand, commitSubjects });
+  }
+  throw new Error(`changelog mode must be git-cliff or placeholder, got ${JSON.stringify(changelogMode)}`);
+}
+
+export function insertChangelogEntry(changelogText, nextVersion, date, entry = buildPlaceholderChangelogEntry(nextVersion, date)) {
   const header = `## [${nextVersion}]`;
   if (changelogText.split("\n").some((line) => line.startsWith(header))) {
     throw new Error(`CHANGELOG.md already contains ${header}`);
+  }
+  if (!entry.includes(header)) {
+    throw new Error(`generated changelog entry does not contain ${header}`);
   }
 
   const firstReleaseHeader = changelogText.search(/^## \[/m);
@@ -77,10 +159,10 @@ export function insertChangelogEntry(changelogText, nextVersion, date) {
     throw new Error("CHANGELOG.md has no existing release header (`## [...]`) to insert before");
   }
 
-  return `${changelogText.slice(0, firstReleaseHeader)}${buildChangelogEntry(nextVersion, date)}${changelogText.slice(firstReleaseHeader)}`;
+  return `${changelogText.slice(0, firstReleaseHeader)}${entry}${changelogText.slice(firstReleaseHeader)}`;
 }
 
-export function prepareRelease({ root, version, bump, date }) {
+export function prepareRelease({ root, version, bump, date, changelogMode, gitCliffCommand, gitCommand, commitSubjects }) {
   const packagePath = path.join(root, "package.json");
   const readmePath = path.join(root, "README.md");
   const changelogPath = path.join(root, "CHANGELOG.md");
@@ -96,20 +178,29 @@ export function prepareRelease({ root, version, bump, date }) {
   }
 
   const releaseDate = date || new Date().toISOString().slice(0, 10);
+  const changelogEntry = buildReleaseChangelogEntry({
+    root,
+    nextVersion,
+    date: releaseDate,
+    changelogMode,
+    gitCliffCommand,
+    gitCommand,
+    commitSubjects,
+  });
 
   const updatedPackageJson = updatePackageJson(packageJsonText, nextVersion);
   const updatedReadme = updateReadmeInstallVersion(readFileSync(readmePath, "utf8"), nextVersion);
-  const updatedChangelog = insertChangelogEntry(readFileSync(changelogPath, "utf8"), nextVersion, releaseDate);
+  const updatedChangelog = insertChangelogEntry(readFileSync(changelogPath, "utf8"), nextVersion, releaseDate, changelogEntry);
 
   writeFileSync(packagePath, updatedPackageJson);
   writeFileSync(readmePath, updatedReadme);
   writeFileSync(changelogPath, updatedChangelog);
 
-  return { currentVersion, nextVersion, releaseDate };
+  return { currentVersion, nextVersion, releaseDate, changelogMode: changelogMode || "git-cliff" };
 }
 
 function parseArgs(argv) {
-  const args = { root: process.cwd(), bump: "patch" };
+  const args = { root: process.cwd(), bump: "patch", changelogMode: "git-cliff" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
@@ -130,6 +221,14 @@ function parseArgs(argv) {
         args.date = next;
         i += 1;
         break;
+      case "--changelog-mode":
+        args.changelogMode = next;
+        i += 1;
+        break;
+      case "--git-cliff-command":
+        args.gitCliffCommand = next;
+        i += 1;
+        break;
       case "--help":
       case "-h":
         args.help = true;
@@ -142,7 +241,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: node scripts/prepare-release.mjs [--bump patch|minor|major] [--version X.Y.Z] [--date YYYY-MM-DD]\n\nUpdates package.json, README.md, and CHANGELOG.md for a release PR.\n`;
+  return `Usage: node scripts/prepare-release.mjs [--bump patch|minor|major] [--version X.Y.Z] [--date YYYY-MM-DD] [--changelog-mode git-cliff|placeholder]\n\nUpdates package.json, README.md, and CHANGELOG.md for a release PR. The default changelog mode uses git-cliff.\n`;
 }
 
 async function main() {
