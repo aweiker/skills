@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -70,7 +71,7 @@ export function buildPlaceholderChangelogEntry(nextVersion, date) {
 // Backward-compatible name for tests/callers that still use the old helper.
 export const buildChangelogEntry = buildPlaceholderChangelogEntry;
 
-export function collectReleaseCommitSubjects({ root, gitCommand = "git" }) {
+function releaseRange(root, gitCommand) {
   let lastTag = "";
   try {
     lastTag = execFileSync(gitCommand, ["describe", "--tags", "--abbrev=0"], {
@@ -81,50 +82,188 @@ export function collectReleaseCommitSubjects({ root, gitCommand = "git" }) {
   } catch {
     lastTag = "";
   }
+  return lastTag ? `${lastTag}..HEAD` : "HEAD";
+}
 
-  const rangeArgs = lastTag ? [`${lastTag}..HEAD`] : ["HEAD"];
-  const output = execFileSync(gitCommand, ["log", "--format=%s", ...rangeArgs], {
+function parseGitLogRecords(output, fields) {
+  return output
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const parts = record.split("\x00");
+      const parsed = {};
+      fields.forEach((field, index) => {
+        parsed[field] = parts[index] ?? "";
+      });
+      return parsed;
+    });
+}
+
+function pullRequestNumbersByCommit({ root, gitCommand, range }) {
+  const output = execFileSync(gitCommand, ["log", "--merges", "--format=%H%x00%s%x1e", range], {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return output.split("\n").map((line) => line.trim()).filter(Boolean);
+  const byCommit = new Map();
+  for (const merge of parseGitLogRecords(output, ["hash", "subject"])) {
+    const match = /^Merge pull request #(\d+)\b/.exec(merge.subject);
+    if (!match) {
+      continue;
+    }
+    let introduced = "";
+    try {
+      introduced = execFileSync(gitCommand, ["rev-list", "--reverse", `${merge.hash}^1..${merge.hash}^2`], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      continue;
+    }
+    for (const hash of introduced.split("\n").map((line) => line.trim()).filter(Boolean)) {
+      byCommit.set(hash, Number(match[1]));
+    }
+  }
+  return byCommit;
+}
+
+export function collectReleaseCommits({ root, gitCommand = "git" }) {
+  const range = releaseRange(root, gitCommand);
+  const prNumbers = pullRequestNumbersByCommit({ root, gitCommand, range });
+  const output = execFileSync(gitCommand, ["log", "--reverse", "--format=%H%x00%P%x00%B%x1e", range], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return parseGitLogRecords(output, ["hash", "parents", "message"])
+    .filter((commit) => commit.parents.trim().split(/\s+/).filter(Boolean).length <= 1)
+    .map((commit) => ({
+      id: commit.hash,
+      message: commit.message.trim(),
+      prNumber: prNumbers.get(commit.hash) ?? null,
+    }))
+    .filter((commit) => commit.message);
+}
+
+// Backward-compatible helper for callers/tests that only need message text.
+export function collectReleaseCommitSubjects({ root, gitCommand = "git" }) {
+  return collectReleaseCommits({ root, gitCommand }).map((commit) => commit.message.split("\n", 1)[0]);
+}
+
+function makeScratchGitRepo(gitCommand) {
+  const scratch = mkdtempSync(path.join(tmpdir(), "skills-release-cliff-"));
+  execFileSync(gitCommand, ["init", "-q"], { cwd: scratch, stdio: "ignore" });
+  execFileSync(gitCommand, ["config", "user.email", "release@example.invalid"], { cwd: scratch, stdio: "ignore" });
+  execFileSync(gitCommand, ["config", "user.name", "Release Automation"], { cwd: scratch, stdio: "ignore" });
+  writeFileSync(path.join(scratch, ".baseline"), "baseline\n");
+  execFileSync(gitCommand, ["add", ".baseline"], { cwd: scratch, stdio: "ignore" });
+  execFileSync(gitCommand, ["commit", "-q", "-m", "chore: baseline"], { cwd: scratch, stdio: "ignore" });
+  execFileSync(gitCommand, ["tag", "v0.0.0"], { cwd: scratch, stdio: "ignore" });
+  return scratch;
+}
+
+function augmentContext(context, commits, nextVersion, date) {
+  const releaseTimestamp = Math.floor(Date.parse(`${date}T00:00:00Z`) / 1000);
+  const byMessage = new Map();
+  for (const commit of commits) {
+    if (!byMessage.has(commit.message)) {
+      byMessage.set(commit.message, []);
+    }
+    byMessage.get(commit.message).push(commit);
+  }
+
+  for (const release of context) {
+    release.version = `v${nextVersion}`;
+    release.timestamp = releaseTimestamp;
+    for (const parsed of release.commits ?? []) {
+      const candidates = byMessage.get(parsed.raw_message) ?? [];
+      const original = candidates.shift();
+      if (!original) {
+        continue;
+      }
+      parsed.id = original.id;
+      if (original.prNumber !== null) {
+        parsed.github = parsed.github || {};
+        parsed.github.pr_number = original.prNumber;
+        parsed.remote = {
+          username: parsed.remote?.username ?? null,
+          pr_title: parsed.remote?.pr_title ?? null,
+          pr_number: original.prNumber,
+          pr_labels: parsed.remote?.pr_labels ?? [],
+          is_first_time: parsed.remote?.is_first_time ?? false,
+        };
+      }
+    }
+  }
+  return context;
+}
+
+function normalizeRenderedEntry(output, nextVersion, date) {
+  const entry = output.trim().replace(/^## \[(?:v?\d+\.\d+\.\d+|unreleased)\] - \d{4}-\d{2}-\d{2}/m, `## [${nextVersion}] - ${date}`);
+  if (!entry) {
+    throw new Error(`git-cliff produced an empty changelog entry for v${nextVersion}`);
+  }
+  if (!entry.includes(`## [${nextVersion}] - ${date}`)) {
+    throw new Error(`generated changelog entry does not contain ## [${nextVersion}] - ${date}`);
+  }
+  return `${entry}\n\n`;
 }
 
 export function buildGitCliffChangelogEntry({
   root,
   nextVersion,
+  date,
   gitCliffCommand = "git-cliff",
   gitCommand = "git",
-  commitSubjects,
+  commits,
 }) {
   parseVersion(nextVersion);
-  const subjects = commitSubjects || collectReleaseCommitSubjects({ root, gitCommand });
-  const args = ["--config", "cliff.toml", "--tag", `v${nextVersion}`];
-  for (const subject of subjects) {
-    args.push("--with-commit", subject);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`date must match YYYY-MM-DD, got ${JSON.stringify(date)}`);
   }
-  if (subjects.length === 0) {
-    args.push("--with-commit", `chore: release v${nextVersion}`);
-  }
-
-  let output;
+  const releaseCommits = commits || collectReleaseCommits({ root, gitCommand });
+  const scratch = makeScratchGitRepo(gitCommand);
   try {
-    output = execFileSync(gitCliffCommand, args, {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (err) {
-    const stderr = err?.stderr ? String(err.stderr).trim() : "";
-    throw new Error(`git-cliff failed while generating changelog for v${nextVersion}${stderr ? `: ${stderr}` : ""}`);
-  }
+    const contextArgs = ["--config", path.join(root, "cliff.toml"), "--unreleased", "--tag", `v${nextVersion}`, "--context", "--workdir", scratch];
+    const commitsForCliff = releaseCommits.length > 0 ? releaseCommits : [{ id: "", message: `chore: release v${nextVersion}`, prNumber: null }];
+    for (const commit of commitsForCliff) {
+      contextArgs.push("--with-commit", commit.message);
+    }
 
-  const entry = output.trim().replace(/^## \[unreleased\]/m, `## [${nextVersion}]`);
-  if (!entry) {
-    throw new Error(`git-cliff produced an empty changelog entry for v${nextVersion}`);
+    let contextOutput;
+    try {
+      contextOutput = execFileSync(gitCliffCommand, contextArgs, {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      const stderr = err?.stderr ? String(err.stderr).trim() : "";
+      throw new Error(`git-cliff failed while building changelog context for v${nextVersion}${stderr ? `: ${stderr}` : ""}`);
+    }
+
+    const context = augmentContext(JSON.parse(contextOutput), commitsForCliff, nextVersion, date);
+    const contextPath = path.join(scratch, "context.json");
+    writeFileSync(contextPath, `${JSON.stringify(context)}\n`);
+
+    let output;
+    try {
+      output = execFileSync(gitCliffCommand, ["--config", path.join(root, "cliff.toml"), "--from-context", contextPath], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      const stderr = err?.stderr ? String(err.stderr).trim() : "";
+      throw new Error(`git-cliff failed while rendering changelog for v${nextVersion}${stderr ? `: ${stderr}` : ""}`);
+    }
+
+    return normalizeRenderedEntry(output, nextVersion, date);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
-  return `${entry}\n\n`;
 }
 
 export function buildReleaseChangelogEntry({
@@ -140,7 +279,8 @@ export function buildReleaseChangelogEntry({
     return buildPlaceholderChangelogEntry(nextVersion, date);
   }
   if (changelogMode === "git-cliff") {
-    return buildGitCliffChangelogEntry({ root, nextVersion, gitCliffCommand, gitCommand, commitSubjects });
+    const commits = commitSubjects?.map((subject) => ({ id: "", message: subject, prNumber: null }));
+    return buildGitCliffChangelogEntry({ root, nextVersion, date, gitCliffCommand, gitCommand, commits });
   }
   throw new Error(`changelog mode must be git-cliff or placeholder, got ${JSON.stringify(changelogMode)}`);
 }

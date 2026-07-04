@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import {
   buildChangelogEntry,
   buildGitCliffChangelogEntry,
   collectReleaseCommitSubjects,
+  collectReleaseCommits,
   bumpVersion,
   insertChangelogEntry,
   prepareRelease,
@@ -75,36 +77,44 @@ function makeFixtureRoot() {
   return root;
 }
 
-function makeFakeGitCliff(root, output) {
+function makeFakeGitCliff(root, { contextOutput, renderOutput }) {
   const command = path.join(root, "fake-git-cliff.sh");
-  const outputFile = path.join(root, "fake-git-cliff-output.md");
+  const contextFile = path.join(root, "fake-git-cliff-context.json");
+  const renderFile = path.join(root, "fake-git-cliff-render.md");
   const argsFile = path.join(root, "fake-git-cliff-args.txt");
-  writeFileSync(outputFile, output);
+  writeFileSync(contextFile, contextOutput);
+  writeFileSync(renderFile, renderOutput);
   writeFileSync(
     command,
-    `#!/usr/bin/env sh\nprintf '%s\\n' "$*" > ${JSON.stringify(argsFile)}\ncat ${JSON.stringify(outputFile)}\n`
+    `#!/usr/bin/env sh
+printf '%s\n' "$*" >> ${JSON.stringify(argsFile)}
+case " $* " in
+  *" --context "*) cat ${JSON.stringify(contextFile)} ;;
+  *) cat ${JSON.stringify(renderFile)} ;;
+esac
+`
   );
   chmodSync(command, 0o755);
   return { command, argsFile };
 }
 
-function makeFakeGit(root) {
-  const command = path.join(root, "fake-git.sh");
-  writeFileSync(
-    command,
-    `#!/usr/bin/env sh
-if [ "$1" = "describe" ]; then
-  printf 'v1.2.3\n'
-elif [ "$1" = "log" ]; then
-  printf 'fix: collected subject\nfeat: another subject\n'
-else
-  echo "unexpected git args: $*" >&2
-  exit 2
-fi
-`
-  );
-  chmodSync(command, 0o755);
-  return command;
+function configureGit(root) {
+  execFileSync("git", ["init", "-q"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd: root, stdio: "ignore" });
+}
+
+function git(root, args) {
+  return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function commandExists(command) {
+  try {
+    execFileSync(command, ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 console.log("\n=== release version helpers ===");
@@ -140,45 +150,91 @@ assertIncludes("changelog entry inserted before previous release", updatedChange
 assertThrows("duplicate changelog release rejected", () => insertChangelogEntry(updatedChangelog, "1.2.4", "2026-07-03"), "already contains");
 assertThrows("wrong generated changelog version rejected", () => insertChangelogEntry(changelog, "1.2.4", "2026-07-03", "## [9.9.9]\n"), "does not contain");
 
-console.log("\n=== release commit subject collection ===");
-const rootWithFakeGit = makeFixtureRoot();
+console.log("\n=== release commit collection ===");
+const rootWithGitHistory = makeFixtureRoot();
 try {
-  const subjects = collectReleaseCommitSubjects({ root: rootWithFakeGit, gitCommand: makeFakeGit(rootWithFakeGit) });
-  assertEqual("collectReleaseCommitSubjects returns subjects after last tag", "fix: collected subject|feat: another subject", subjects.join("|"));
+  configureGit(rootWithGitHistory);
+  git(rootWithGitHistory, ["add", "."]);
+  git(rootWithGitHistory, ["commit", "-q", "-m", "chore: initial"]);
+  git(rootWithGitHistory, ["tag", "v1.2.3"]);
+  git(rootWithGitHistory, ["checkout", "-q", "-b", "feature/breaking"]);
+  writeFileSync(path.join(rootWithGitHistory, "feature.txt"), "feature\n");
+  git(rootWithGitHistory, ["add", "feature.txt"]);
+  git(rootWithGitHistory, ["commit", "-q", "-m", "feat: branch feature", "-m", "BREAKING CHANGE: branch API changed"]);
+  const featureHash = git(rootWithGitHistory, ["rev-parse", "HEAD"]).trim();
+  git(rootWithGitHistory, ["checkout", "-q", "master"]);
+  git(rootWithGitHistory, ["merge", "--no-ff", "feature/breaking", "-m", "Merge pull request #42 from test/feature", "-m", "feat: branch feature"]);
+  writeFileSync(path.join(rootWithGitHistory, "fix.txt"), "fix\n");
+  git(rootWithGitHistory, ["add", "fix.txt"]);
+  git(rootWithGitHistory, ["commit", "-q", "-m", "fix: direct fix"]);
+
+  const commits = collectReleaseCommits({ root: rootWithGitHistory });
+  assertEqual("collectReleaseCommits skips merge commits", 2, commits.length);
+  assertEqual("collectReleaseCommits preserves commit id", featureHash, commits[0].id);
+  assertIncludes("collectReleaseCommits preserves footer body", commits[0].message, "BREAKING CHANGE: branch API changed");
+  assertEqual("collectReleaseCommits maps merge PR number to branch commit", 42, commits[0].prNumber);
+  const subjects = collectReleaseCommitSubjects({ root: rootWithGitHistory });
+  assertEqual("collectReleaseCommitSubjects returns first lines", "feat: branch feature|fix: direct fix", subjects.join("|"));
 } finally {
-  rmSync(rootWithFakeGit, { recursive: true, force: true });
+  rmSync(rootWithGitHistory, { recursive: true, force: true });
 }
 
 console.log("\n=== git-cliff changelog generation ===");
 const rootWithFakeCliff = makeFixtureRoot();
 try {
-  const { command, argsFile } = makeFakeGitCliff(rootWithFakeCliff, "## [1.2.4] - 2026-07-03\n\n### Fixed\n\n- Generated by git-cliff\n");
+  const { command, argsFile } = makeFakeGitCliff(rootWithFakeCliff, {
+    contextOutput: `${JSON.stringify([{ version: "v1.2.4", timestamp: 0, commits: [{ raw_message: "fix: generated by git-cliff\n\nBREAKING CHANGE: generated break", message: "generated by git-cliff", github: {} }] }])}\n`,
+    renderOutput: "## [1.2.4] - 2099-12-31\n\n### Fixed\n\n- Generated by git-cliff\n",
+  });
   const entry = buildGitCliffChangelogEntry({
     root: rootWithFakeCliff,
     nextVersion: "1.2.4",
+    date: "2026-07-03",
     gitCliffCommand: command,
-    commitSubjects: ["fix: generated by git-cliff"],
+    commits: [{ id: "abc123", message: "fix: generated by git-cliff\n\nBREAKING CHANGE: generated break", prNumber: 7 }],
   });
+  const argsText = readFileSync(argsFile, "utf8");
   assertIncludes("git-cliff entry returned", entry, "Generated by git-cliff");
-  assertIncludes("git-cliff invoked with config", readFileSync(argsFile, "utf8"), "--config cliff.toml");
-  assertIncludes("git-cliff invoked with release tag", readFileSync(argsFile, "utf8"), "--tag v1.2.4");
-  assertIncludes("git-cliff invoked with commit subject", readFileSync(argsFile, "utf8"), "--with-commit fix: generated by git-cliff");
+  assertIncludes("git-cliff entry honors requested date", entry, "## [1.2.4] - 2026-07-03");
+  assertIncludes("git-cliff invoked with absolute config", argsText, `--config ${path.join(rootWithFakeCliff, "cliff.toml")}`);
+  assertIncludes("git-cliff invoked with release tag", argsText, "--tag v1.2.4");
+  assertIncludes("git-cliff context generation is bounded", argsText, "--unreleased");
+  assertIncludes("git-cliff invoked with context generation", argsText, "--context");
+  assertIncludes("git-cliff invoked with full commit body", argsText, "BREAKING CHANGE: generated break");
+  assertIncludes("git-cliff renders from generated context", argsText, "--from-context");
 } finally {
   rmSync(rootWithFakeCliff, { recursive: true, force: true });
 }
 
 const rootWithUnreleasedCliff = makeFixtureRoot();
 try {
-  const { command } = makeFakeGitCliff(rootWithUnreleasedCliff, "## [unreleased] - 2026-07-03\n\n### Fixed\n\n- Generated by git-cliff\n");
+  const { command } = makeFakeGitCliff(rootWithUnreleasedCliff, {
+    contextOutput: `${JSON.stringify([{ version: null, timestamp: 0, commits: [{ raw_message: "fix: generated by git-cliff", message: "generated by git-cliff", github: {} }] }])}\n`,
+    renderOutput: "## [unreleased] - 2099-12-31\n\n### Fixed\n\n- Generated by git-cliff\n",
+  });
   const entry = buildGitCliffChangelogEntry({
     root: rootWithUnreleasedCliff,
     nextVersion: "1.2.4",
+    date: "2026-07-03",
     gitCliffCommand: command,
-    commitSubjects: ["fix: generated by git-cliff"],
+    commits: [{ id: "", message: "fix: generated by git-cliff", prNumber: null }],
   });
   assertIncludes("git-cliff unreleased header normalized", entry, "## [1.2.4] - 2026-07-03");
 } finally {
   rmSync(rootWithUnreleasedCliff, { recursive: true, force: true });
+}
+
+if (commandExists("git-cliff")) {
+  const entry = buildGitCliffChangelogEntry({
+    root: process.cwd(),
+    nextVersion: "1.2.4",
+    date: "2026-07-03",
+    commits: [{ id: "abc123", message: "feat: risky change\n\nBREAKING CHANGE: API changed", prNumber: 123 }],
+  });
+  assertIncludes("git-cliff renders PR number from augmented context", entry, "Risky change (#123)");
+  assertIncludes("git-cliff renders breaking footer from full body", entry, "**Breaking:** API changed");
+} else {
+  ok("git-cliff integration skipped because git-cliff is not installed");
 }
 
 function assertPrepareReleaseUpdatesFixture(label, options, expectedVersion) {
@@ -204,7 +260,10 @@ assertPrepareReleaseUpdatesFixture("explicit version", { version: "2.5.7" }, "2.
 console.log("\n=== prepareRelease integration with git-cliff ===");
 const rootForGitCliffRelease = makeFixtureRoot();
 try {
-  const { command } = makeFakeGitCliff(rootForGitCliffRelease, "## [1.2.4] - 2026-07-03\n\n### Added\n\n- Release notes from git-cliff\n");
+  const { command } = makeFakeGitCliff(rootForGitCliffRelease, {
+    contextOutput: `${JSON.stringify([{ version: "v1.2.4", timestamp: 0, commits: [{ raw_message: "feat: release notes from git-cliff", message: "release notes from git-cliff", github: {} }] }])}\n`,
+    renderOutput: "## [1.2.4] - 2026-07-03\n\n### Added\n\n- Release notes from git-cliff\n",
+  });
   const result = prepareRelease({
     root: rootForGitCliffRelease,
     bump: "patch",

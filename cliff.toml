@@ -14,7 +14,7 @@ body = """
 
 ### {{ group | striptags | trim | upper_first }}
 {% for commit in commits %}
-- {{ commit.message | upper_first }}{% if commit.remote.pr_number %} (#{{ commit.remote.pr_number }}){% endif %}
+- {{ commit.message | upper_first }}{% if commit.remote.pr_number %} (#{{ commit.remote.pr_number }}){% endif %}{% if commit.breaking_description %} **Breaking:** {{ commit.breaking_description }}{% endif %}
 {%- endfor %}
 {% endfor %}
 
