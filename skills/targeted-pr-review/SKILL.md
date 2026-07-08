@@ -19,6 +19,7 @@ The goal is to avoid a single broad review that misses specialized issues. First
 - Prefer project validation commands from repository instructions/Makefile when later fixing findings.
 - Control token/model spend deliberately. Choose a spend mode before invoking external models, and escalate only when risk justifies it.
 - Keep multi-model reviews independent until synthesis; do not feed one model's findings to another before both have reviewed.
+- Do not accept "tests pass" or "looks guarded" as proof of correctness. Proof must cite the guard/validator/contract/test/repro that blocks the named failure case.
 
 ## Workflow
 
@@ -91,7 +92,58 @@ Read, in this order:
 
 Do not assume a fixed docs layout. If docs moved or new plans were added, use the discovered/ranked files.
 
-### 4. Choose spend mode and generate focused review plan
+### 4. Identify invariants and proof obligations
+
+Before selecting review passes, write the correctness obligations the PR must satisfy. This prevents broad review prose from replacing proof.
+
+Produce these artifacts. Do not leave them empty for code-changing PRs.
+
+```markdown
+### Invariant / proof obligation ledger
+
+| Invariant | Source: issue/doc/code | Failure case/opposite | Code proof | Test proof | Gap/finding |
+|---|---|---|---|---|---|
+```
+
+```markdown
+### Diff-added dereference / absence inventory
+
+| Added dereference or required value | Consumer/entrypoint | Why value may be absent/null/invalid | Producer(s) traced | Guard/validator/contract proof | Test proof | Gap/finding |
+|---|---|---|---|---|---|---|
+```
+
+```markdown
+### Required-field producer/consumer contract matrix
+
+| Consumer requires | Consumer proof | Producer/call path | Producer sets it? | If missing, runtime result | Test uses real producer? | Gap/finding |
+|---|---|---|---:|---|---:|---|
+```
+
+Mechanical aid for the dereference inventory; adapt the pattern to the repo's language and base ref:
+
+```bash
+git diff <base>..HEAD -- '*.java' '*.kt' '*.ts' '*.tsx' '*.js' '*.go' \
+  | rg '^\+[^+].*(\.name\(|\.toString\(|\.size\(|\.stream\(|Optional\.get\(|Map\.of\(|List\.of\(|get[A-Za-z0-9_]*\(\)\.|!\.|\.\()'
+```
+
+Rules:
+
+- Every behavioral claim must name the opposite/failure case before it can be called correct.
+- Every new dereference of data from DTOs, event payloads, external services, request/context objects, config, persistence records, logging/MDC, metrics, or typed contracts needs proof that the value is present or intentionally handled when absent.
+- For each required value, trace at least one real producer/call path. Producer means builder, mapper, parser, factory, deserializer, test fixture, mock setup, or upstream contract that creates the value consumed by the changed code.
+- If a consumer dereferences `x.getY().name()` or equivalent, the review is incomplete until it proves every in-scope producer sets `Y`, rejects missing `Y` before the consumer, or the consumer handles missing `Y` safely.
+- Include language-specific crash/defaulting patterns such as chained getters, enum `.name()`, `.toString()`, `.size()`, `.stream()`, unboxing nullable wrappers, `Optional.get()`, `Map.of(...)`, and `List.of(...)` when their inputs can be nullable.
+- A guard later in the method is not proof for a dereference that occurs before the guard.
+- Logging, metrics, tracing, and MDC changes are production behavior; they can fail or distort operations and are not exempt.
+- A unit test that mocks or hand-builds the consumer input is not proof that the production producer satisfies the required-field contract. Mark it as a test gap unless another test covers the real producer-to-consumer path.
+- If proof is missing, emit a finding or a concrete test-gap. Do not hide it behind "covered by general tests."
+
+Hard gate:
+
+- Do not synthesize final findings until every row in the dereference inventory has a producer/call-path disposition.
+- If the inventory has more rows than can be reviewed manually, sample only after grouping by DTO/type/consumer field, and state which groups remain `review-incomplete:`. Do not silently drop rows.
+
+### 5. Choose spend mode and generate focused review plan
 
 Load `references/multi-model-orchestration.md` before selecting external model passes.
 
@@ -114,6 +166,18 @@ Before running model reviews or doing manual triage, produce a short plan:
 ### Invariants inferred from docs/code
 - ...
 
+### Invariant/proof obligations
+| Invariant | Failure case/opposite | Code proof | Test proof | Gap/finding |
+|---|---|---|---|---|
+
+### Diff-added dereference / absence inventory
+| Added dereference or required value | Consumer/entrypoint | Producer(s) traced | Guard/validator/contract proof | Test proof | Gap/finding |
+|---|---|---|---|---|---|
+
+### Required-field producer/consumer contract matrix
+| Consumer requires | Consumer proof | Producer/call path | Producer sets it? | Test uses real producer? | Gap/finding |
+|---|---|---|---:|---:|---|
+
 ### Spend mode
 - Mode: ...
 - Why this mode is sufficient:
@@ -128,14 +192,17 @@ Before running model reviews or doing manual triage, produce a short plan:
 - ... — why safe to skip
 ```
 
-Choose review passes from the dynamic script output and the docs you read. Always include a test-gap pass for non-trivial code changes.
+Choose review passes from the dynamic script output, proof obligations, dereference inventory, producer/consumer matrix, and the docs you read. Always include a test-gap pass for non-trivial code changes. Include an invariant/proof-correctness pass whenever the ledger has unproven failure cases. Include a boundary/nullability pass whenever the diff adds dereferences, defaulting, typed-contract consumption, logging/MDC/metrics fields, event payload reads, request/context reads, external-service response reads, or config/persistence value reads. Include a producer/consumer contract pass whenever a changed consumer dereferences fields on a DTO/model built outside that method.
 
-### 5. Focused review prompt templates
+### 6. Focused review prompt templates
 
 Load `references/focused-review-prompts.md` for reusable prompts. Adapt prompts to the current repo, selected docs, and changed files.
 
 For each pass, keep the prompt narrow. Examples:
 
+- Only invariant/proof correctness: claims, opposites, and evidence.
+- Only diff-added dereference/nullability/absence regressions.
+- Only required-field producer/consumer contract mismatches.
 - Only state machine/fail-closed behavior.
 - Only OTP/GenServer responsiveness and process ownership.
 - Only API contract/idempotency compatibility.
@@ -144,7 +211,7 @@ For each pass, keep the prompt narrow. Examples:
 - Only persistence/replay consistency.
 - Only test gaps vs docs and PR claims.
 
-### 6. Optional external model execution
+### 7. Optional external model execution
 
 If the user wants external model review and `claude` and/or `codex` are available, run one output file per pass. Keep artifacts untracked.
 
@@ -206,16 +273,18 @@ PROMPT
 
 See `references/multi-model-orchestration.md` for spend modes, escalation triggers, and command variants.
 
-### 7. Synthesize and triage findings
+### 8. Synthesize and triage findings
 
 Only after independent model passes are complete, combine manual review, external model outputs, and PR comments into one matrix:
 
 ```markdown
-| Finding | Source/pass | Real? | Severity | Violated invariant | Test needed | Fix/defer/push back |
-|---|---|---:|---:|---|---|---|
+| Finding | Source/pass | Real? | Severity | Violated invariant | Unproven failure case / proof gap | Test needed | Fix/defer/push back |
+|---|---|---:|---:|---|---|---|---|
 ```
 
 Do not use majority vote. Verify findings directly against code, docs, tests, or a small local repro. A finding can be real even when only one model found it.
+
+Before finalizing, reconcile all proof artifacts: every `missing`, `not traced`, `mock-only`, `no producer proof`, `no negative test`, or `review-incomplete` row must appear as a final finding/question or be explicitly pushed back with evidence.
 
 Classify each finding:
 
@@ -224,7 +293,7 @@ Classify each finding:
 - **Push back** — incorrect or harmful suggestion; explain why.
 - **Needs human decision** — ambiguous product/domain choice.
 
-### 8. If fixing findings
+### 9. If fixing findings
 
 When the user asks to fix:
 
@@ -249,6 +318,9 @@ For a plan-only run, output:
 
 - context sources read;
 - inferred invariants;
+- invariant/proof obligation ledger;
+- diff-added dereference / absence inventory when applicable;
+- required-field producer/consumer contract matrix when applicable;
 - selected spend mode and why;
 - focused review passes to run;
 - assigned engine/model for each pass;
@@ -258,6 +330,7 @@ For a plan-only run, output:
 For a completed review, output:
 
 - blocking issues;
+- proof gaps and missing negative tests;
 - non-blocking polish;
 - false positives/pushback;
 - needs-human-decision items;

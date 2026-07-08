@@ -30,7 +30,8 @@ changed_files_tmp=$(mktemp)
 doc_files_tmp=$(mktemp)
 keyword_tmp=$(mktemp)
 ranked_docs_tmp=$(mktemp)
-trap 'rm -f "$changed_files_tmp" "$doc_files_tmp" "$keyword_tmp" "$ranked_docs_tmp"' EXIT
+diff_content_tmp=$(mktemp)
+trap 'rm -f "$changed_files_tmp" "$doc_files_tmp" "$keyword_tmp" "$ranked_docs_tmp" "$diff_content_tmp"' EXIT
 
 diff_range=""
 if [[ -n "$base" ]] && git rev-parse --verify --quiet "$base" >/dev/null; then
@@ -53,8 +54,10 @@ if [[ "$diff_range" == "working-tree" ]]; then
   if [[ -n "$staged_shortstat" ]]; then
     shortstat="$shortstat; staged: $staged_shortstat"
   fi
+  { git diff --unified=0 || true; git diff --cached --unified=0 || true; } > "$diff_content_tmp"
 else
   shortstat=$(git diff --shortstat "$diff_range" || true)
+  git diff --unified=0 "$diff_range" > "$diff_content_tmp" || true
 fi
 
 find . \
@@ -109,7 +112,8 @@ done < "$doc_files_tmp" | sort -rn > "$ranked_docs_tmp"
 
 changed_text=$(tr '\n' ' ' < "$changed_files_tmp" | tr '[:upper:]' '[:lower:]')
 keyword_text=$(tr '\n' ' ' < "$keyword_tmp")
-combined_text="$changed_text $keyword_text"
+added_diff_signals=$(grep -E '^\+[^+]' "$diff_content_tmp" 2>/dev/null | tr '\n' ' ' | tr '[:upper:]' '[:lower:]' | cut -c1-20000 || true)
+combined_text="$changed_text $keyword_text $added_diff_signals"
 
 print_dimension_if() {
   local name="$1"
@@ -171,6 +175,18 @@ fi
 
 cat <<'EOF'
 
+## Candidate diff-added dereferences / required values
+
+These are not findings. Each row that reaches changed production code must be traced to real producers/builders/mappers before final synthesis. Mock-only tests do not prove these are safe.
+
+```text
+EOF
+
+grep -E '^\+[^+].*(\.name\(|\.toString\(|\.size\(|\.stream\(|Optional\.get\(|Map\.of\(|List\.of\(|get[A-Za-z0-9_]*\(\)\.|!\.|\.\()' "$diff_content_tmp" 2>/dev/null | head -120 || true
+
+cat <<'EOF'
+```
+
 ## Dynamically ranked design/context docs
 
 These are ranked at review time from discovered markdown files. Scores combine generic design-doc locations/names plus path/content keyword matches from the current branch and changed files.
@@ -192,8 +208,10 @@ print_dimension_if "Security/privacy/ownership" '(auth|credential|secret|token|k
 print_dimension_if "Persistence/event/replay consistency" '(repo|schema|migration|event|store|ledger|replay|backfill|query|database|db|ets)' "changed names suggest stored/replayed state; verify persisted state and derived read models remain consistent."
 print_dimension_if "Configuration/topology/dependency wiring" '(config|option|opts|setting|topology|supervisor|child|spec|dependency|provider|credential)' "changed names suggest runtime wiring; verify options/dependencies are propagated and fingerprint/rebuild rules are intentional."
 print_dimension_if "Observability/error taxonomy" '(telemetry|metric|log|audit|event|error|exception|reason|failure)' "changed names suggest diagnostics; verify bounded logs, useful error categories, and no sensitive data."
+print_dimension_if "Diff-added dereference / absence" '(\.name\(|\.tostring\(|\.size\(|\.stream\(|optional\.get\(|map\.of\(|list\.of\(|mdc\.put\(|get[a-z0-9_]*\(\)\.)' "added lines suggest new required-value assumptions; inventory null/absence proof for each dereference before synthesis."
 
 cat <<'EOF'
+- Invariant proof review — always run: every behavioral claim needs a source, an opposite/failure case, code proof, and test proof or an explicit gap.
 - Test-gap review — always run: compare claims from docs/plans/PR body against assertions and negative tests.
 - Scope review — always run: compare diff against roadmap/plan/issue intent and flag out-of-scope behavior.
 
