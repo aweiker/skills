@@ -20,6 +20,8 @@ The goal is to avoid a single broad review that misses specialized issues. First
 - Control token/model spend deliberately. Choose a spend mode before invoking external models, and escalate only when risk justifies it.
 - Keep multi-model reviews independent until synthesis; do not feed one model's findings to another before both have reviewed.
 - Do not accept "tests pass" or "looks guarded" as proof of correctness. Proof must cite the guard/validator/contract/test/repro that blocks the named failure case.
+- Running compile/unit tests is allowed during review when local commands exist. Treat build artifacts as uncommitted byproducts; do not commit them.
+- Do not run integration, e2e, destructive, deployment, docker-compose, database-migration, or external-service suites unless the user explicitly asks or repo docs state they are the normal local unit gate.
 
 ## Workflow
 
@@ -143,7 +145,38 @@ Hard gate:
 - Do not synthesize final findings until every row in the dereference inventory has a producer/call-path disposition.
 - If the inventory has more rows than can be reviewed manually, sample only after grouping by DTO/type/consumer field, and state which groups remain `review-incomplete:`. Do not silently drop rows.
 
-### 5. Choose spend mode and generate focused review plan
+### 5. Compile and unit-test validation precheck
+
+Before synthesis, and preferably before external model passes when the commands are cheap, identify and run the project's local compile and unit-test gates when they exist.
+
+Command selection rules:
+
+1. Prefer commands documented in `README`, `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, CI config, Makefile, Gradle/Maven/npm scripts, or project-specific instructions.
+2. If docs are silent, infer conservative local commands from build files:
+   - Gradle: `./gradlew test` plus a compile task such as `./gradlew compileJava` / `compileTestJava` when present or module-specific equivalents for changed modules.
+   - Maven: `./mvnw test` or `mvn test`.
+   - Go: `go test ./...`.
+   - Node: inspect `package.json`; prefer `npm test`, `pnpm test`, `yarn test`, and `npm run build` only when scripts are local/unit-oriented.
+   - Python: `python -m pytest` when pytest config/tests exist.
+   - Rust: `cargo test`.
+   - Elixir: `mix test`.
+   - .NET: `dotnet test`.
+3. Compile before unit tests when a clear compile/build command exists.
+4. For large/multi-module repos, run changed-module compile/tests and the narrow tests covering changed behavior first; run the full unit suite when it is the documented normal local gate or reasonably scoped.
+5. If a command is likely to require external services, secrets, cloud credentials, docker, a live database, or long-running integration infrastructure, do not run it by default. Record it as skipped with the exact reason.
+6. If commands fail because prerequisites are missing, report the blocker and the command output summary. Do not hide validation failures behind review findings.
+7. Passing compile/tests are evidence only. They do not replace invariant proof, producer/consumer tracing, or negative-test review.
+
+Produce:
+
+```markdown
+### Local validation commands
+
+| Command | Why selected | Result | Evidence / failure summary |
+|---|---|---|---|
+```
+
+### 6. Choose spend mode and generate focused review plan
 
 Load `references/multi-model-orchestration.md` before selecting external model passes.
 
@@ -178,6 +211,10 @@ Before running model reviews or doing manual triage, produce a short plan:
 | Consumer requires | Consumer proof | Producer/call path | Producer sets it? | Test uses real producer? | Gap/finding |
 |---|---|---|---:|---:|---|
 
+### Local validation commands
+| Command | Why selected | Result | Evidence / failure summary |
+|---|---|---|---|
+
 ### Spend mode
 - Mode: ...
 - Why this mode is sufficient:
@@ -194,7 +231,7 @@ Before running model reviews or doing manual triage, produce a short plan:
 
 Choose review passes from the dynamic script output, proof obligations, dereference inventory, producer/consumer matrix, and the docs you read. Always include a test-gap pass for non-trivial code changes. Include an invariant/proof-correctness pass whenever the ledger has unproven failure cases. Include a boundary/nullability pass whenever the diff adds dereferences, defaulting, typed-contract consumption, logging/MDC/metrics fields, event payload reads, request/context reads, external-service response reads, or config/persistence value reads. Include a producer/consumer contract pass whenever a changed consumer dereferences fields on a DTO/model built outside that method.
 
-### 6. Focused review prompt templates
+### 7. Focused review prompt templates
 
 Load `references/focused-review-prompts.md` for reusable prompts. Adapt prompts to the current repo, selected docs, and changed files.
 
@@ -211,7 +248,7 @@ For each pass, keep the prompt narrow. Examples:
 - Only persistence/replay consistency.
 - Only test gaps vs docs and PR claims.
 
-### 7. Optional external model execution
+### 8. Optional external model execution
 
 If the user wants external model review and `claude` and/or `codex` are available, run one output file per pass. Keep artifacts untracked.
 
@@ -273,7 +310,7 @@ PROMPT
 
 See `references/multi-model-orchestration.md` for spend modes, escalation triggers, and command variants.
 
-### 8. Synthesize and triage findings
+### 9. Synthesize and triage findings
 
 Only after independent model passes are complete, combine manual review, external model outputs, and PR comments into one matrix:
 
@@ -293,7 +330,7 @@ Classify each finding:
 - **Push back** — incorrect or harmful suggestion; explain why.
 - **Needs human decision** — ambiguous product/domain choice.
 
-### 9. If fixing findings
+### 10. If fixing findings
 
 When the user asks to fix:
 
@@ -321,6 +358,7 @@ For a plan-only run, output:
 - invariant/proof obligation ledger;
 - diff-added dereference / absence inventory when applicable;
 - required-field producer/consumer contract matrix when applicable;
+- local compile/unit-test commands selected, run, skipped, or blocked;
 - selected spend mode and why;
 - focused review passes to run;
 - assigned engine/model for each pass;
@@ -334,5 +372,6 @@ For a completed review, output:
 - non-blocking polish;
 - false positives/pushback;
 - needs-human-decision items;
+- local validation command results;
 - suggested tests;
 - suggested validation commands.

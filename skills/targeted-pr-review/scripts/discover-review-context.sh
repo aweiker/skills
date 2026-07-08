@@ -163,6 +163,57 @@ fi
 
 cat <<'EOF'
 
+## Candidate local validation commands
+
+These are candidates, not orders. Prefer documented project commands and skip commands that require external services, secrets, docker, live databases, deployment, or e2e infrastructure unless explicitly requested.
+
+EOF
+
+validation_found=0
+if [[ -x ./gradlew ]]; then
+  echo "- Gradle wrapper detected: inspect modules/docs; likely candidates include \`./gradlew test\` and compile tasks such as \`./gradlew compileJava\` / module-specific equivalents."
+  validation_found=1
+elif [[ -f build.gradle || -f build.gradle.kts || -f settings.gradle || -f settings.gradle.kts ]]; then
+  echo "- Gradle files detected: likely candidates include \`gradle test\` and compile tasks; prefer wrapper if available."
+  validation_found=1
+fi
+if [[ -x ./mvnw ]]; then
+  echo "- Maven wrapper detected: likely candidate \`./mvnw test\`."
+  validation_found=1
+elif [[ -f pom.xml ]]; then
+  echo "- Maven pom detected: likely candidate \`mvn test\`."
+  validation_found=1
+fi
+if [[ -f package.json ]]; then
+  echo "- package.json detected: inspect scripts; likely candidates include local/unit \`npm test\`, \`pnpm test\`, \`yarn test\`, and build/typecheck scripts when present."
+  validation_found=1
+fi
+if [[ -f go.mod ]]; then
+  echo "- Go module detected: likely candidate \`go test ./...\`."
+  validation_found=1
+fi
+if [[ -f pyproject.toml || -f pytest.ini || -f setup.cfg || -d tests ]]; then
+  echo "- Python tests/config detected: likely candidate \`python -m pytest\` if pytest is configured."
+  validation_found=1
+fi
+if [[ -f Cargo.toml ]]; then
+  echo "- Rust crate detected: likely candidate \`cargo test\`."
+  validation_found=1
+fi
+if [[ -f mix.exs ]]; then
+  echo "- Elixir project detected: likely candidate \`mix test\`."
+  validation_found=1
+fi
+if [[ -n "$(find . -maxdepth 3 \( -name '*.sln' -o -name '*.csproj' \) 2>/dev/null | head -1)" ]]; then
+  echo "- .NET project detected: likely candidate \`dotnet test\`."
+  validation_found=1
+fi
+if [[ "$validation_found" -eq 0 ]]; then
+  echo "- No common local compile/unit-test command detected from root files. Read project docs before concluding tests are unavailable."
+fi
+
+cat <<'EOF'
+
 ## Keyword signals derived from branch and changed paths
 
 EOF

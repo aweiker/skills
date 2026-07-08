@@ -190,15 +190,16 @@ Look for:
 ## Test-gap pass
 
 ```text
-Focus only on missing tests relative to design docs, PR claims, and changed behavior.
+Focus only on missing tests relative to design docs, PR claims, changed behavior, and local validation results.
 
 For each missing test, identify:
 - the behavior/invariant claimed;
 - the file/function where it is implemented or should be;
-- why existing tests do not cover it;
+- whether local compile/unit commands were run, skipped, blocked, or failed;
+- why existing tests and any passing local validation do not cover it;
 - a concrete test name and setup/action/assertion outline.
 
-Prioritize negative tests and edge cases over happy paths.
+Prioritize negative tests and edge cases over happy paths. Passing unit tests do not prove untested invariants, producer/consumer contracts, or absent/null/security/failure behavior.
 ```
 
 ## Scope/intent pass
