@@ -4,6 +4,7 @@ description: "Always load at the start of any story, issue, bug fix, feature, PR
 allowed-tools:
   - Read
   - Agent
+  - Bash
 ---
 
 # Test-First Design
@@ -27,6 +28,16 @@ Perform the applicability check and record the minimum required output:
 ## Core rule
 
 Do not spawn the implementation agent until the design agent's plan has passed the Implementation gate. If behavior is ambiguous at any point, pause and surface the ambiguity to the user with proposed solutions before proceeding.
+
+## Worker model rule
+
+When spawning design or implementation workers, use the newest approved high-capability model exposed by the core AI proxy:
+
+```text
+hai-aicore-anthropic/anthropic--claude-4.8-opus
+```
+
+If the available agent-spawn tool exposes model selection, set the worker model to that exact ID. If the generic Agent tool does not expose model selection, spawn the worker with `pi --model hai-aicore-anthropic/anthropic--claude-4.8-opus ...` (preserving isolated context and the required prompt contents). If neither path can guarantee the model, do not silently fall back; pause and tell the user that the worker model could not be enforced.
 
 ## Never
 
