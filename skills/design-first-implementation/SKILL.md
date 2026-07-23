@@ -27,7 +27,7 @@ At the start of **any** story, issue, bug fix, feature, PR, implementation, task
 
 This router loads for every work item; the applicability check decides whether to run the full workflow or skip it. Default to the full workflow. Use it when work is non-trivial or touches state, persistence, APIs/contracts, schemas, migrations, security/privacy, integrations, retries, idempotency, retention, reconciliation, irreversible/external effects, typed contracts, escaping/sanitization, UI rendering of backend-governed data, or important edge cases.
 
-The full workflow may be skipped only for mechanical edits, typo/formatting changes, documentation-only changes, dependency bumps, config-only changes, or an obvious one-line refactor after recording why no material invariant, contract, state transition, edge case, or side effect is affected.
+The full workflow may be skipped only for mechanical edits, typo/formatting changes, documentation-only changes, dependency bumps, config-only changes, or an obvious one-line refactor after recording why no material invariant, contract, state transition, edge case, or side effect is affected. For dependency bumps and config-only changes, skipping requires inspected evidence that security/privacy, compatibility, persistence, public/API contracts, and material invariants are unaffected; otherwise use the full workflow.
 
 For bugs, reproduce or obtain source-level evidence of current behavior and establish root cause before designing the fix.
 
@@ -109,7 +109,7 @@ Because this model must be pinned, and the Pi `subagent` tool has no `model` par
 
 ### Phase 1: Design worker (read-only)
 
-Representative Pi CLI call — design workers get a read-only tool allowlist (no `edit`/`write`); add `bash` only if evidence gathering needs a shell, with an explicit no-mutation instruction:
+Representative Pi CLI call — design workers remain on a read-only tool allowlist with no `bash`, `edit`, or `write`. Gather shell-derived evidence in the main agent and include it in the prompt rather than widening the worker's tools:
 
 ```bash
 workdir="/absolute/path/to/target-repo-or-worktree"

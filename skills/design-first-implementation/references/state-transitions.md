@@ -111,10 +111,15 @@ At minimum, test applicable scenarios for:
 - duplicate and stale events;
 - concurrent updates or version mismatch;
 - crash/timeout around the atomicity boundary;
+- persistence succeeds but the response is lost;
+- partial commit across multiple stores;
 - retry after unknown completion;
+- failure after success, success after failure, and repeated failure;
+- terminal-state escape attempts;
+- retention/deletion transitions;
 - exact freshness/TTL boundary and clock skew;
 - old/new version coexistence;
-- persisted state versus read model;
+- persisted state versus a read-time-derived model without a new write;
 - no forbidden external side effect.
 
 Every table row must map to a test or documented validation. Material transition risks must map to `risk-assessment-and-treatment.md` records.
@@ -157,7 +162,13 @@ Applicable-category coverage—record scenarios or explain why impossible:
 - [ ] Duplicate or out-of-order events
 - [ ] Idempotency-key collision, reuse, expiry, and scope
 - [ ] Crash/restart or cancellation during an in-flight transition
+- [ ] Persistence succeeds but the response is lost
+- [ ] Partial commit across multiple stores
 - [ ] Ambiguous remote completion
+- [ ] Failure after success, success after failure, or repeated failure
+- [ ] Terminal-state escape attempts
+- [ ] Retention/deletion transitions
+- [ ] Status/read model derived at read time without a new write
 - [ ] Exact TTL boundaries and clock skew
 - [ ] Authorization or ownership change during operation
 - [ ] Split-brain or multi-region disagreement

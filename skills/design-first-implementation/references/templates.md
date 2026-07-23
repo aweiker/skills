@@ -1,6 +1,6 @@
 # Templates
 
-## Applicability check (produce at start of issue/story work)
+## Applicability check (produce at start of any work item)
 
 ```markdown
 ## Test-first design applicability
