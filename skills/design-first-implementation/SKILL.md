@@ -1,10 +1,8 @@
 ---
 name: design-first-implementation
-description: "Always load at the start of story, issue, bug fix, feature, PR, implementation, or other non-trivial code-changing work. Decide whether a full evidence-grounded design/test plan is required, then progressively load guidance for behavior, risk treatment, state transitions, migrations, and verification before production code. Default to the full workflow unless the change is purely mechanical with no material invariant, contract, state transition, edge case, or side effect. Triggers on: design-first, test-first, TDD, implementation gate, behavior matrix, stateful behavior, APIs/contracts, retries, idempotency, schemas, migrations, security/privacy, irreversible effects, edge cases."
-allowed-tools:
-  - Read
-  - Agent
-  - Bash
+description: "Always load at the start of any story, issue, bug fix, feature, PR, implementation, task, or project work item — for every work item, no exceptions; the applicability check then decides whether the full evidence-grounded design/test plan is required or the item is safe to skip. When required, progressively load guidance for behavior, risk treatment, state transitions, migrations, and verification before production code. Default to the full workflow unless the change is purely mechanical with no material invariant, contract, state transition, edge case, or side effect. Triggers on: story, issue, bug fix, feature, PR, implementation, task, project work item, design-first, test-first, TDD, implementation gate, behavior matrix, stateful behavior, APIs/contracts, retries, idempotency, schemas, migrations, security/privacy, edge cases."
+allowed-tools: read bash subagent
+compatibility: "Full delegated workflow needs a private high-capability model (hai-aicore-anthropic/anthropic--claude-4.8-opus). Enforce it via a Pi CLI worker (pi --print --model ...) or a configured subagent agent whose definition pins that model. If neither is available, pause and obtain user authorization before running inline; all gates still apply."
 ---
 
 # Design-First Implementation Router
@@ -17,7 +15,7 @@ The core discipline is mandatory; catalogs and templates are conditional. Do not
 
 ## Activation and applicability
 
-At the start of any story, issue, bug fix, feature, PR implementation, or non-trivial code change, produce:
+At the start of **any** story, issue, bug fix, feature, PR, implementation, task, or project work item (no exceptions), produce:
 
 ```markdown
 ## Test-first design applicability
@@ -27,7 +25,7 @@ At the start of any story, issue, bug fix, feature, PR implementation, or non-tr
 - If no, why safe to skip:
 ```
 
-Default to the full workflow. Use it when work is non-trivial or touches state, persistence, APIs/contracts, schemas, migrations, security/privacy, integrations, retries, idempotency, retention, reconciliation, irreversible/external effects, typed contracts, escaping/sanitization, UI rendering of backend-governed data, or important edge cases.
+This router loads for every work item; the applicability check decides whether to run the full workflow or skip it. Default to the full workflow. Use it when work is non-trivial or touches state, persistence, APIs/contracts, schemas, migrations, security/privacy, integrations, retries, idempotency, retention, reconciliation, irreversible/external effects, typed contracts, escaping/sanitization, UI rendering of backend-governed data, or important edge cases.
 
 The full workflow may be skipped only for mechanical edits, typo/formatting changes, documentation-only changes, dependency bumps, config-only changes, or an obvious one-line refactor after recording why no material invariant, contract, state transition, edge case, or side effect is affected.
 
@@ -97,50 +95,101 @@ When recovery is possible, validate recovery/rollback. When harm is genuinely ir
 
 ## Pi delegation and context contract
 
-Use isolated design/implementation workers when the task scope, workflow, or user request calls for delegation. If the user explicitly asks the main agent to implement directly, the main agent still must satisfy the same evidence, design, implementation-gate, test-matrix, and verification requirements before editing.
+The full workflow **defaults to isolation**: run it as two isolated phases (a design phase, then an implementation phase), never inline in the main context by default. Run inline **only** when the user explicitly requires direct work or explicitly authorizes inline execution after no worker path can enforce the required model. Otherwise pause and explain the worker-model gap. When running inline, record the authorization, exception, and reason in the applicability check. Inline execution does **not** relax the evidence, design, implementation-gate, test-matrix, or verification requirements or weaken any gate.
 
-When spawning design or implementation workers, use the newest approved high-capability model exposed by the core AI proxy:
+### Required worker model
+
+Delegated design/implementation workers must run on the newest approved high-capability model exposed by the core AI proxy:
 
 ```text
 hai-aicore-anthropic/anthropic--claude-4.8-opus
 ```
 
-If the available Agent tool exposes model selection, set the worker model to that exact ID. If the generic Agent tool does not expose model selection, spawn the worker with `pi --model hai-aicore-anthropic/anthropic--claude-4.8-opus ...` while preserving isolated context and the required prompt contents. If neither path can guarantee the model, do not silently fall back; pause and tell the user that the worker model could not be enforced.
+Because this model must be pinned, and the Pi `subagent` tool has no `model` parameter while the currently configured `planner`/`worker` agents pin Sonnet, the **authoritative delegation path is the raw Pi CLI worker**. Use `subagent` only when the selected agent definition demonstrably pins the required model. If neither path can enforce the model, pause and obtain explicit user authorization before any inline exception.
 
-When delegating, preserve two isolated phases while using the progressive reference structure:
+### Phase 1: Design worker (read-only)
 
-### Phase 1: Design worker
+Representative Pi CLI call — design workers get a read-only tool allowlist (no `edit`/`write`); add `bash` only if evidence gathering needs a shell, with an explicit no-mutation instruction:
 
-1. Spawn a design worker with isolated context. Include the full task, inspected evidence, relevant file context, the loaded `workflow-and-testing.md` and `templates.md` requirements, and any triggered risk/state/migration references.
+```bash
+workdir="/absolute/path/to/target-repo-or-worktree"
+cd "$workdir" || exit 1
+timeout 1200s pi --print \
+   --model hai-aicore-anthropic/anthropic--claude-4.8-opus \
+   --session-id df-design-<slug> \
+   --name "df-design <slug>" \
+   --no-skills \
+   --tools read,grep,find,ls \
+   --no-approve \
+   @/tmp/df-design-prompt-<slug>.md \
+   > /tmp/df-design-result-<slug>.md
+rc=$?
+```
+
+1. Write the prompt file (`@`-included above) with the full task, inspected evidence, relevant file context, the loaded `workflow-and-testing.md` and `templates.md` requirements, and any triggered risk/state/migration references. Set an explicit `cwd` = target repo/worktree. Instruct the worker: "Do not load or invoke `design-first-implementation`; do not spawn another Pi instance or subagent. Execute only this assigned phase."
 2. Instruct the worker to produce the complete design/test plan from `templates.md`, not a free-form plan.
-3. Review the returned plan against the mandatory implementation gate. Ask: "Which check is hardest to answer?" The hardest gate check is the likeliest gap.
-4. If gaps remain, send one focused revision request identifying the missing evidence, rules, risks, transitions, or tests. If the revision is still insufficient, do not proceed; ask the user with 2–3 concrete resolutions and a recommendation.
-5. Approve the plan and copy only the final approved plan into main context.
+3. If `rc == 124`, report that the design worker exceeded its 20-minute bound, discard partial output, and do not advance phases. For any other `rc != 0`, do **not** treat partial output as an approved plan; surface the failing command and exit code to the user and do not advance phases.
+4. Review the returned plan against the mandatory implementation gate. Ask: "Which check is hardest to answer?" The hardest gate check is the likeliest gap.
+5. If gaps remain, send one focused revision request identifying the missing evidence, rules, risks, transitions, or tests. If the revision is still insufficient, do not proceed; ask the user with 2–3 concrete resolutions and a recommendation.
+6. Approve the plan and copy only the final approved plan into main context.
 
 ### Phase 2: Implementation worker
 
-1. Spawn an implementation worker only after plan approval. Give it the approved plan verbatim, relevant file context, and instruction to implement only against the test matrix and produce the `templates.md` verification summary.
-2. Review the returned verification summary for matrix adherence, acceptance-criteria traceability, new special cases, open questions, validation evidence, and any review-loop findings.
-3. If the summary is incomplete or new cases bypassed design coverage, send one focused follow-up request. If the follow-up is still insufficient, do not accept; ask the user with the specific uncovered cases and 2–3 proposed resolutions.
-4. Accept the result and copy only the final verification summary into main context. Do not copy worker deliberation, discarded paths, or intermediate drafts.
+Same session-id/name scheme (`df-impl-<slug>`), editing tool allowlist, and explicit `cwd`:
 
-## Worker model rule
-
-When spawning design or implementation workers, use the newest approved high-capability model exposed by the core AI proxy:
-
-```text
-hai-aicore-anthropic/anthropic--claude-4.8-opus
+```bash
+workdir="/absolute/path/to/target-repo-or-worktree"
+cd "$workdir" || exit 1
+timeout 1200s pi --print \
+   --model hai-aicore-anthropic/anthropic--claude-4.8-opus \
+   --session-id df-impl-<slug> \
+   --name "df-impl <slug>" \
+   --no-skills \
+   --tools read,bash,edit,write,grep,find,ls \
+   --no-approve \
+   @/tmp/df-impl-prompt-<slug>.md \
+   > /tmp/df-impl-result-<slug>.md
+rc=$?
 ```
 
-If the available agent-spawn tool exposes model selection, set the worker model to that exact ID. If the generic Agent tool does not expose model selection, spawn the worker with `pi --model hai-aicore-anthropic/anthropic--claude-4.8-opus ...` (preserving isolated context and the required prompt contents). If neither path can guarantee the model, do not silently fall back; pause and tell the user that the worker model could not be enforced.
+1. Spawn the implementation worker only after plan approval. The prompt file must contain the approved plan verbatim plus relevant file context and the instruction to implement only against the test matrix and produce the `templates.md` verification summary. It must also say: "Do not load or invoke `design-first-implementation`; do not spawn another Pi instance or subagent. Execute only this assigned phase." The design result is the handoff: approved plan text becomes the implementation worker's prompt input.
+2. If `rc == 124`, report that the implementation worker exceeded its 20-minute bound, discard partial output, and do not advance. For any other `rc != 0`, do **not** treat partial output as an accepted verification summary; surface the failure and do not advance.
+3. Review the returned verification summary for matrix adherence, acceptance-criteria traceability, new special cases, open questions, validation evidence, and any review-loop findings.
+4. If the summary is incomplete or new cases bypassed design coverage, send one focused follow-up request. If the follow-up is still insufficient, do not accept; ask the user with the specific uncovered cases and 2–3 proposed resolutions.
+5. Accept the result and copy only the final verification summary into main context. Do not copy worker deliberation, discarded paths, or intermediate drafts.
+
+### Delegation controls
+
+- **Isolation**: distinct `--session-id`/`--name` per phase; explicit `cwd` = target repo/worktree; only the approved plan / final verification summary cross into main context.
+- **Project-file approval**: default `--no-approve` (do not auto-trust project-local Pi extensions/agents/skills). Use `--approve` only when the user has authorized trusting the target project's local Pi config, and state that explicitly.
+- **Prompt/result capture**: pass prompts via `@file` under `/tmp`; redirect stdout to result files, or use `--mode json` when machine-parsing is needed.
+- **`subagent` alternative**: permitted only when the selected agent definition pins the required model. Inspect the selected definition first; do not assume the model from the agent name. Representative design call:
+  ```json
+  {
+    "agent": "<opus-pinned-design-agent>",
+    "cwd": "/absolute/path/to/target-repo-or-worktree",
+    "agentScope": "user",
+    "task": "Design phase only. Read-only. Produce the complete design/test plan from references/templates.md using this full task, inspected evidence, relevant file context, and triggered references: <...>. Do not load or invoke design-first-implementation; do not spawn another Pi instance or subagent. Execute only this assigned phase."
+  }
+  ```
+  Representative implementation call after plan approval:
+  ```json
+  {
+    "agent": "<opus-pinned-implementation-agent>",
+    "cwd": "/absolute/path/to/target-repo-or-worktree",
+    "agentScope": "user",
+    "task": "Implementation phase only. Implement only against this approved plan and test matrix, then return the references/templates.md Verification summary: <approved plan verbatim>. Do not load or invoke design-first-implementation; do not spawn another Pi instance or subagent. Execute only this assigned phase."
+  }
+  ```
+  If the Opus-pinned agent is project-local, set `agentScope` to `project` or `both` only after the user approves trusting project-local agent files; leave `confirmProjectAgents` enabled. The current `planner`/`worker` agents pin Sonnet and do **not** satisfy this requirement. Do **not** mutate global agent definitions to force the model; use `subagent` only if/when an Opus-pinned agent is configured.
 
 ## Never
 
-- NEVER conflate persisted state with derived/read-time state. They diverge once time, policy, permissions, or compatibility rules are applied.
-- NEVER patch a review finding's local symptom. A finding is evidence of a missing design rule: fix the rule and add a test.
-- NEVER let migration-time and runtime classify the same old data differently.
-- NEVER ship happy-path-only behavior. Hard-to-specify unhappy paths are design gaps, not implementation details.
-- NEVER skip negative assertions for security/privacy work. "No leakage" and "no forbidden side effect" must be asserted explicitly.
+- NEVER conflate persisted state with derived/read-time state. They diverge once time, policy, permissions, or compatibility rules are applied — read models silently drift from stored truth after a policy rollout.
+- NEVER patch a review finding's local symptom. A finding is evidence of a missing design rule: fix the rule and add a test — otherwise the same bug class resurfaces at other callers.
+- NEVER let migration-time and runtime classify the same old data differently — rows flip state on the next write.
+- NEVER ship happy-path-only behavior. Hard-to-specify unhappy paths are design gaps, not implementation details — an unspecified retry produces duplicate records.
+- NEVER skip negative assertions for security/privacy work. "No leakage" and "no forbidden side effect" must be asserted explicitly — a "returns correct user" test passes while a leak reaches production.
 - NEVER send a spawned agent a vague prompt. Include the task, evidence, relevant file context, loaded-reference triggers, and required output format.
 - NEVER let spawned-agent deliberation accumulate in main context. Keep only approved outputs.
 - NEVER give an implementation worker the task description without the approved plan.
@@ -183,16 +232,14 @@ If any relevant answer is no, continue designing or ask the user before coding. 
 
 ## Output and verification
 
-When the full workflow applies, `references/templates.md` is the canonical source for:
+When the full workflow applies, canonical schemas live in their trigger-specific references:
 
-- Design/test plan;
-- compact/full risk records;
-- high-risk user decision record;
-- state-transition table and category coverage;
-- blocking/non-blocking open questions;
-- final verification summary.
+- `references/templates.md`: applicability check, compact design/test plan, blocking/non-blocking open questions, and the final verification summary;
+- `references/risk-assessment-and-treatment.md`: compact/full risk records and the high-risk user decision record;
+- `references/state-transitions.md`: state-transition table and applicable-category coverage;
+- `references/migration-and-backfill.md`: migration/backfill plan template.
 
-Do not duplicate or improvise alternate schemas in the core. Load the template once and reuse it.
+Do not duplicate or improvise alternate schemas in the core. Load each template once and reuse it.
 
 Even when the full workflow is skipped, verification before any requested push is proportionate and mandatory: compile/lint/test affected code or configuration, or run repository-provided formatting/link/document checks for docs. If required checks cannot run locally, use approved CI/remote validation when available, state the exact evidence gap, and do not claim verification. Do not push with a material unverified gap unless repository policy permits it and the user explicitly accepts it.
 

@@ -122,3 +122,22 @@ Before implementation or execution, verify:
 5. Supporting new writers before old readers can tolerate the shape.
 6. Calling an irreversible transformation rollback-safe because code can be reverted.
 7. Validating row counts without validating meaning, conflicts, and read behavior.
+
+## Migration/backfill plan template
+
+When a migration/backfill trigger applies, complete this in the design/test plan's `Migration/backfill behavior` section:
+
+```text
+Semantic upgrade rules (per old-data shape: complete/missing/partial/malformed/empty/rollout-created/deleted):
+Migration-time vs runtime classification agreement:
+Authoritative source per migrated value (stored vs derived):
+Old/new reader/writer compatibility and rollout order:
+Dual-read/dual-write window and exit condition:
+Default behavior when new data is absent:
+Backfill selection/watermark, batch identity, resumability, idempotency:
+Live-write-vs-backfill precedence and overwrite protection:
+Reconciliation for skipped/conflicted rows and completion evidence:
+Rollback classification (code / schema / data transform / irreversible):
+Stop conditions, monitoring, ownership, and incident-response plan:
+Material migration risk IDs (see risk-assessment-and-treatment.md):
+```

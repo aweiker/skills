@@ -1,6 +1,6 @@
 # State Transitions, Concurrency, and Idempotency
 
-Load this reference when work touches persisted status, freshness, lifecycle transitions, retries, idempotency, concurrent writers, event ordering, time-dependent reads, remote side effects, or distributed consistency. Also load `risk-assessment-and-treatment.md` when any transition can violate an important invariant, and `templates.md` for the canonical table.
+Load this reference when work touches persisted status, freshness, lifecycle transitions, retries, idempotency, concurrent writers, event ordering, time-dependent reads, remote side effects, or distributed consistency. Also load `risk-assessment-and-treatment.md` when any transition can violate an important invariant. Use this file's `State-transition table template` section for the canonical table.
 
 ## Separate stored and observed state
 
@@ -13,7 +13,7 @@ A stale/fresh value derived from current time is not necessarily persisted statu
 
 ## Build the transition table before coding
 
-Use these canonical fields from `templates.md`:
+Use the canonical fields below (see the `State-transition table template` section for the fillable table):
 
 | Field | Purpose |
 |---|---|
@@ -143,3 +143,25 @@ Before implementation, verify:
 6. Ignoring cancellation and crash windows.
 7. Testing sequential writes while production permits concurrent writers.
 8. Letting backfill and live writes use different transition rules.
+
+## State-transition table template
+
+Populate before coding when a state/transition trigger applies:
+
+| Prior state/version | Input/event identity | Guards/preconditions | Outcome (accept/reject/no-op) | Expected stored state | Expected read model | Side effects / atomicity boundary | Retry/idempotency behavior | Detection/recovery | Risk ID / test |
+|---|---|---|---|---|---|---|---|---|---|
+
+Applicable-category coverage—record scenarios or explain why impossible:
+
+- [ ] Concurrent writers / lost updates / isolation / read-after-write
+- [ ] Duplicate or out-of-order events
+- [ ] Idempotency-key collision, reuse, expiry, and scope
+- [ ] Crash/restart or cancellation during an in-flight transition
+- [ ] Ambiguous remote completion
+- [ ] Exact TTL boundaries and clock skew
+- [ ] Authorization or ownership change during operation
+- [ ] Split-brain or multi-region disagreement
+- [ ] Backfill racing live writes
+- [ ] Old/new application versions coexisting
+- [ ] Partial migration resume/rollback
+- [ ] Rejected transition versus accepted no-op

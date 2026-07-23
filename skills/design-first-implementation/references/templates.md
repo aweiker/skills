@@ -36,92 +36,15 @@
 
 ### Risk assessment
 
-Use the compact record only for low/medium risks with high confidence and undisputed materiality/reachability:
-
-```text
-Risk ID:
-Evidence sources:
-Edge case / transition:
-Violated invariant and direct consequence:
-Impact / exposure / inherent risk:
-Detectability / recovery evidence:
-Confidence / assumptions:
-Treatment type and mechanism:
-Acceptance authority / standing policy, if treatment is acceptance:
-Verification evidence:
-Residual risk:
-```
-
-Use the full record for high/critical/unknown risks, sensitive or disputed cases, irreversible effects, and temporary mitigations:
-
-```text
-Risk ID:
-Evidence sources:
-Reachable trigger and evidence:
-Incorrect behavior / transition:
-Violated invariant and direct consequence:
-Impact / material scope / reversibility:
-Exposure:
-Detectability:
-Recovery or explicit irreversibility:
-Confidence and evidence gaps:
-Inherent risk:
-Removal option / authoritative boundary / replacement risks:
-Mitigation controls / dimensions changed:
-Treatment selected and authorized owner:
-Verification evidence:
-Residual risk:
-Unknowns and blocking status:
-Temporary mitigation infeasibility rationale:
-Temporary mitigation owner / review date / monitoring / permanent-treatment path:
-User decision required:
-```
-
-For each high/critical item: what evidence would lower the rating?
-For each low item: what assumption, if false, would raise it?
-Unknowns that could affect an invariant: resolved, or why implementation is blocked.
-Removal claim: eliminated causal link, authoritative boundary/evidence, and replacement risks.
-Mitigation: risk dimension reduced, rationale, and remaining residual risk.
-
-### High-risk user feedback / decision
-
-Complete and present before implementation or the hazardous action for every high/critical risk and potentially-high unknown. If discovered mid-work, pause before further affected mutation:
-
-- Risk ID, failure chain, violated invariant, consequence, and confidence:
-- Evidence that would lower or resolve the risk:
-- Removal option considered, trade-offs, and replacement risks:
-- Mitigation option considered, dimension reduced, and residual risk:
-- Recommendation and rationale:
-- Recovery/rollback plan, or explicit irreversibility plus prevention/containment/incident response:
-- Authorized residual-risk acceptance owner:
-- Containment already applied, or none:
-- Containment authorization/task/policy/runbook:
-- Rollback/restoration handle and read-back verification:
-- User decision required, or why existing authorization is sufficient:
-
-If unsure, ask the user inline with concrete options and a recommendation; do not assume the user's requirements, authority, or risk tolerance. If no answer is available and irreversible harm is possible, make no new mutation or external dispatch, preserve evidence, and block the hazardous action. Enter another default-deny state only when an existing policy/runbook authorizes that exact transition.
+When a risk trigger applies, use the compact/full risk record templates in `risk-assessment-and-treatment.md` (its `Risk record templates` section). Do not improvise an alternate schema here.
 
 ### State-transition table
 
-| Prior state/version | Input/event identity | Guards/preconditions | Outcome (accept/reject/no-op) | Expected stored state | Expected read model | Side effects / atomicity boundary | Retry/idempotency behavior | Detection/recovery | Risk ID / test |
-|---|---|---|---|---|---|---|---|---|---|
-
-Applicable-category coverage—record scenarios or explain why impossible:
-
-- [ ] Concurrent writers / lost updates / isolation / read-after-write
-- [ ] Duplicate or out-of-order events
-- [ ] Idempotency-key collision, reuse, expiry, and scope
-- [ ] Crash/restart or cancellation during an in-flight transition
-- [ ] Ambiguous remote completion
-- [ ] Exact TTL boundaries and clock skew
-- [ ] Authorization or ownership change during operation
-- [ ] Split-brain or multi-region disagreement
-- [ ] Backfill racing live writes
-- [ ] Old/new application versions coexisting
-- [ ] Partial migration resume/rollback
-- [ ] Rejected transition versus accepted no-op
+When a state/transition trigger applies, use the transition table plus applicable-category coverage template in `state-transitions.md` (its `State-transition table template` section).
 
 ### Migration/backfill behavior
+
+When a migration/backfill trigger applies, use the migration plan template in `migration-and-backfill.md` (its `Migration/backfill plan template` section).
 
 ### Tests to write first
 

@@ -1,6 +1,6 @@
 # Risk Assessment, Treatment, and User Decision Gates
 
-Load this reference when an unhappy path or transition could violate an important invariant, or when work touches security/privacy, persistence, migrations, financial effects, authorization, irreversible external actions, or material operational risk. Use the canonical compact/full records in `templates.md`.
+Load this reference when an unhappy path or transition could violate an important invariant, or when work touches security/privacy, persistence, migrations, financial effects, authorization, irreversible external actions, or material operational risk. Use the compact/full risk records and high-risk decision templates in this file's `Risk record templates` section.
 
 ## Purpose
 
@@ -125,7 +125,7 @@ Proceed without another question only when treatment is safe, reversible, alread
 
 Ask with a recommendation when evidence is insufficient; options affect requirements, compatibility, cost, delivery, availability, or operational burden; removal may weaken required behavior; residual risk remains high/critical; an action is irreversible/externally visible; or ownership/authority/risk tolerance is unknown.
 
-Use the canonical **High-risk user feedback / decision** section in `templates.md` for the design record and user-facing decision. Do not emit a reduced or alternate schema. Complete every applicable field—including residual risk, acceptance authority, irreversibility/recovery, containment authorization, and restoration/read-back evidence—before proceeding.
+Use the **High-risk user feedback / decision** template in this file's `Risk record templates` section for the design record and user-facing decision. Do not emit a reduced or alternate schema. Complete every applicable field—including residual risk, acceptance authority, irreversibility/recovery, containment authorization, and restoration/read-back evidence—before proceeding.
 
 Never ask a vague “what should I do?” If clarification is unavailable and irreversible harm is possible, make no new mutation or external dispatch, preserve evidence, and block the hazardous action.
 
@@ -151,7 +151,7 @@ Before implementation, verify:
 - removal proves the eliminated causal link and replacement-risk assessment;
 - mitigation names changed dimensions and residual risk;
 - high/critical controls use tests, detection, and recovery/rollback or explicit irreversibility alternatives;
-- high/potentially-high risk was communicated before action using the complete canonical `templates.md` section, with no reduced alternate form;
+- high/potentially-high risk was communicated before action using the complete canonical record in `Risk record templates`, with no reduced alternate form;
 - material acceptance has an authorized owner;
 - any unilateral containment was exactly authorized, minimally mutating, restorable, and read back;
 - temporary mitigation has rationale, owner, expiry/review, monitoring, and permanent path.
@@ -168,3 +168,70 @@ Before implementation, verify:
 8. Removing required behavior under the label of risk removal.
 9. Guessing user risk tolerance or acceptance authority.
 10. Treating containment as broad mutation authority.
+
+## Risk record templates
+
+Use the compact record only for low/medium risks with high confidence and undisputed materiality/reachability:
+
+```text
+Risk ID:
+Evidence sources:
+Edge case / transition:
+Violated invariant and direct consequence:
+Impact / exposure / inherent risk:
+Detectability / recovery evidence:
+Confidence / assumptions:
+Treatment type and mechanism:
+Acceptance authority / standing policy, if treatment is acceptance:
+Verification evidence:
+Residual risk:
+```
+
+Use the full record for high/critical/unknown risks, sensitive or disputed cases, irreversible effects, and temporary mitigations:
+
+```text
+Risk ID:
+Evidence sources:
+Reachable trigger and evidence:
+Incorrect behavior / transition:
+Violated invariant and direct consequence:
+Impact / material scope / reversibility:
+Exposure:
+Detectability:
+Recovery or explicit irreversibility:
+Confidence and evidence gaps:
+Inherent risk:
+Removal option / authoritative boundary / replacement risks:
+Mitigation controls / dimensions changed:
+Treatment selected and authorized owner:
+Verification evidence:
+Residual risk:
+Unknowns and blocking status:
+Temporary mitigation infeasibility rationale:
+Temporary mitigation owner / review date / monitoring / permanent-treatment path:
+User decision required:
+```
+
+For each high/critical item: what evidence would lower the rating?
+For each low item: what assumption, if false, would raise it?
+Unknowns that could affect an invariant: resolved, or why implementation is blocked.
+Removal claim: eliminated causal link, authoritative boundary/evidence, and replacement risks.
+Mitigation: risk dimension reduced, rationale, and remaining residual risk.
+
+### High-risk user feedback / decision
+
+Complete and present before implementation or the hazardous action for every high/critical risk and potentially-high unknown. If discovered mid-work, pause before further affected mutation:
+
+- Risk ID, failure chain, violated invariant, consequence, and confidence:
+- Evidence that would lower or resolve the risk:
+- Removal option considered, trade-offs, and replacement risks:
+- Mitigation option considered, dimension reduced, and residual risk:
+- Recommendation and rationale:
+- Recovery/rollback plan, or explicit irreversibility plus prevention/containment/incident response:
+- Authorized residual-risk acceptance owner:
+- Containment already applied, or none:
+- Containment authorization/task/policy/runbook:
+- Rollback/restoration handle and read-back verification:
+- User decision required, or why existing authorization is sufficient:
+
+If unsure, ask the user inline with concrete options and a recommendation; do not assume the user's requirements, authority, or risk tolerance. If no answer is available and irreversible harm is possible, make no new mutation or external dispatch, preserve evidence, and block the hazardous action. Enter another default-deny state only when an existing policy/runbook authorizes that exact transition.
